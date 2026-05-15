@@ -1,0 +1,15 @@
+{
+  "framework": "vite",
+  "functions": {
+    "api/frameio/[...path].js": {
+      "memory":      128,
+      "maxDuration": 15
+    }
+  },
+  "rewrites": [
+    {
+      "source":      "/api/frameio/(.*)",
+      "destination": "/api/frameio/[...path]"
+    }
+  ]
+}
