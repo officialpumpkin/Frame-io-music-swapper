@@ -403,10 +403,10 @@ const CSS = `
 export default function MusicLayerV3() {
 
   // ── Connection state
-  const [token, setToken]         = useState("");
+  const [token, setToken]         = useState("server-auth");
   const [tokenInput, setTokenInput] = useState("");
-  const [connStatus, setConnStatus] = useState("idle"); // idle | connecting | ok | error
-  const [connMsg, setConnMsg]     = useState("");
+  const [connStatus, setConnStatus] = useState("ok"); 
+  const [connMsg, setConnMsg]     = useState("Secured by Vercel");  
 
   // ── Asset / video state
   const [urlInput, setUrlInput]   = useState("");
