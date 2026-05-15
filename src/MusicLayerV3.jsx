@@ -55,18 +55,38 @@ const FIO = {
 // Parse any Frame.io URL and return { type, id }
 function parseFrameioURL(url) {
   const u = url.trim();
-  const reviewMatch  = u.match(/\/reviews\/([a-f0-9-]{36})/i);
+  
+  const reviewMatch  = u.match(/\/(?:reviews|r)\/([a-f0-9-]{36})/i);
   if (reviewMatch) return { type: "review_link", id: reviewMatch[1] };
   const presentMatch = u.match(/\/presentations\/([a-f0-9-]{36})/i);
   if (presentMatch) return { type: "review_link", id: presentMatch[1] };
-  const uuid = u.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
-  if (uuid) return { type: "asset", id: uuid[1] };
+  
+  // Extract ALL UUIDs from the URL
+  const uuids = [...u.matchAll(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi)];
+  
+  if (uuids.length > 0) {
+    // In V4 URLs, the actual asset/folder is always the LAST ID in the chain
+    const targetId = uuids[uuids.length - 1][0];
+    return { type: "asset", id: targetId };
+  }
+  
   return null;
 }
 
 // Resolve any URL → { type: 'video'|'folder', asset?, assets?, folderName? }
 async function resolveURL(token, url) {
-  const parsed = parseFrameioURL(url);
+  let finalUrl = url.trim();
+  
+  // Check if it's a shortlink. If so, let our backend expand it first.
+  if (/f\.io\//i.test(finalUrl)) {
+    if (!finalUrl.startsWith('http')) finalUrl = `https://${finalUrl}`;
+    const expandRes = await fetch(`/api/expand?url=${encodeURIComponent(finalUrl)}`);
+    if (!expandRes.ok) throw new Error("Could not expand shortlink.");
+    const expandData = await expandRes.json();
+    finalUrl = expandData.expandedUrl || finalUrl;
+  }
+
+  const parsed = parseFrameioURL(finalUrl);
   if (!parsed) throw new Error("Couldn't find a Frame.io asset ID in that URL.");
 
   if (parsed.type === "review_link") {
