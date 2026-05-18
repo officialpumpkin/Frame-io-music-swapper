@@ -23,7 +23,6 @@ const FPS_OPTIONS = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60];
 
 // ─── Frame.io API Layer ───────────────────────────────────────────────────────
 
-// Relative URL works in both local dev (Vite proxy) and on Vercel (serverless function)
 const API_BASE = "/api/frameio";
 
 async function apiRequest(token, method, path, body) {
@@ -43,40 +42,42 @@ async function apiRequest(token, method, path, body) {
 }
 
 const FIO = {
-  me:             (t)          => apiRequest(t, "GET",  "/me"),
-  asset:          (t, id)      => apiRequest(t, "GET",  `/assets/${id}`),
-  children:       (t, id)      => apiRequest(t, "GET",  `/assets/${id}/children?type=file&page=1&page_size=40`),
-  reviewLink:     (t, id)      => apiRequest(t, "GET",  `/review_links/${id}`),
-  getComments:    (t, assetId) => apiRequest(t, "GET",  `/assets/${assetId}/comments`),
-  postComment:    (t, assetId, text, timestamp) =>
-    apiRequest(t, "POST", `/assets/${assetId}/comments`, { text, timestamp }),
+  me:          (t)                              => apiRequest(t, "GET",  "/me"),
+  accounts:    (t)                              => apiRequest(t, "GET",  "/accounts"),
+  // V4: assets → files, account_id required in every path
+  asset:       (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/files/${id}?include=media_links.efficient`),
+  children:    (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/files/${id}/children?type=file&page=1&page_size=40`),
+  reviewLink:  (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/review_links/${id}`),
+  getComments: (t, acct, assetId)               => apiRequest(t, "GET",  `/accounts/${acct}/files/${assetId}/comments`),
+  postComment: (t, acct, assetId, text, timestamp) =>
+    apiRequest(t, "POST", `/accounts/${acct}/files/${assetId}/comments`, { text, timestamp }),
 };
 
 // Parse any Frame.io URL and return { type, id }
 function parseFrameioURL(url) {
   const u = url.trim();
-  
+
   const reviewMatch  = u.match(/\/(?:reviews|r)\/([a-f0-9-]{36})/i);
   if (reviewMatch) return { type: "review_link", id: reviewMatch[1] };
   const presentMatch = u.match(/\/presentations\/([a-f0-9-]{36})/i);
   if (presentMatch) return { type: "review_link", id: presentMatch[1] };
-  
+
   // Extract ALL UUIDs from the URL
   const uuids = [...u.matchAll(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi)];
-  
+
   if (uuids.length > 0) {
     // In V4 URLs, the actual asset/folder is always the LAST ID in the chain
     const targetId = uuids[uuids.length - 1][0];
     return { type: "asset", id: targetId };
   }
-  
+
   return null;
 }
 
 // Resolve any URL → { type: 'video'|'folder', asset?, assets?, folderName? }
-async function resolveURL(token, url) {
+async function resolveURL(token, accountId, url) {
   let finalUrl = url.trim();
-  
+
   // Check if it's a shortlink. If so, let our backend expand it first.
   if (/f\.io\//i.test(finalUrl)) {
     if (!finalUrl.startsWith('http')) finalUrl = `https://${finalUrl}`;
@@ -90,20 +91,24 @@ async function resolveURL(token, url) {
   if (!parsed) throw new Error("Couldn't find a Frame.io asset ID in that URL.");
 
   if (parsed.type === "review_link") {
-    const link = await FIO.reviewLink(token, parsed.id);
-    const items = link.items || link.assets || [];
-    const videos = items.filter(a => a.type === "file");
+    const link = await FIO.reviewLink(token, accountId, parsed.id);
+    // V4 may wrap items differently
+    const items = link.items || link.assets || link.data || [];
+    const videos = items.filter(a => a.type === "file" || a.item_type === "file");
     if (videos.length === 1) return { type: "video", asset: videos[0] };
     if (videos.length > 1)  return { type: "folder", assets: videos, folderName: link.name || "Review Link" };
     throw new Error("This review link contains no video assets.");
   }
 
-  const asset = await FIO.asset(token, parsed.id);
-  if (asset.type === "file") return { type: "video", asset };
+  const asset = await FIO.asset(token, accountId, parsed.id);
+  if (asset.type === "file" || asset.item_type === "file") return { type: "video", asset };
 
-  // Folder / project
-  const children = await FIO.children(token, parsed.id);
-  const videos = children.filter(a => a.type === "file" && /video/i.test(a.media_type || ""));
+  // Folder / project — V4 may wrap children in { data: [...] }
+  const childrenRes = await FIO.children(token, accountId, parsed.id);
+  const children    = Array.isArray(childrenRes) ? childrenRes : (childrenRes.data || []);
+  const videos = children.filter(a =>
+    (a.type === "file" || a.item_type === "file") && /video/i.test(a.media_type || "")
+  );
   if (videos.length === 0) throw new Error("No video files found in this folder.");
   if (videos.length === 1) return { type: "video", asset: videos[0] };
   return { type: "folder", assets: videos, folderName: asset.name };
@@ -111,8 +116,15 @@ async function resolveURL(token, url) {
 
 // Pick best available playback URL from an asset
 function videoURL(asset) {
-  const t = asset.transcodes || {};
-  return t.h264_1080 || t.h264_720 || t.h264_540 || t.h264_360 || asset.original || null;
+  // V4 uses media_links; fall back to V2 transcodes for compatibility
+  const ml = asset.media_links || {};
+  const t  = asset.transcodes  || {};
+  return (
+    ml.efficient?.url    ||
+    ml.high_quality?.url ||
+    t.h264_1080 || t.h264_720 || t.h264_540 || t.h264_360 ||
+    asset.original || null
+  );
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -131,8 +143,6 @@ function colorFor(str) {
   return TRACK_PALETTE[Math.abs(h) % TRACK_PALETTE.length];
 }
 
-// Decode audio file — returns real waveform AND duration so we don't rely
-// on the audio element's async metadata event (which can be 0 in StrictMode)
 async function analyseAudio(file, numBars = 300) {
   try {
     const arrayBuffer = await file.arrayBuffer();
@@ -167,8 +177,6 @@ async function analyseAudio(file, numBars = 300) {
   }
 }
 
-// Spotify-style symmetric SVG waveform
-// Bars grow from the centre outward, rounded ends, played portion illuminated
 function WaveformSVG({ waveform, progress, color, height = 56, dimmed = false }) {
   const BAR_W = 1;
   const GAP   = 0.5;
@@ -423,59 +431,61 @@ const CSS = `
 export default function MusicLayerV3() {
 
   // ── Connection state
-  const [token, setToken]         = useState("server-auth");
+  const [token, setToken]           = useState("server-auth");
   const [tokenInput, setTokenInput] = useState("");
-  const [connStatus, setConnStatus] = useState("ok"); 
-  const [connMsg, setConnMsg]     = useState("Secured by Vercel");  
+  const [connStatus, setConnStatus] = useState("ok");
+  const [connMsg, setConnMsg]       = useState("Secured by Vercel");
+
+  // ── Frame.io account (V4 requires account_id in every path)
+  const [accountId, setAccountId]   = useState(null);
 
   // ── Asset / video state
-  const [urlInput, setUrlInput]   = useState("");
-  const [resolving, setResolving] = useState(false);
+  const [urlInput, setUrlInput]     = useState("");
+  const [resolving, setResolving]   = useState(false);
   const [resolveErr, setResolveErr] = useState("");
-  const [currentAsset, setCurrentAsset] = useState(null);  // { id, name, url }
-  const [folderAssets, setFolderAssets] = useState(null);   // [{id,name,thumb,url}]
-  const [folderName, setFolderName] = useState("");
+  const [currentAsset, setCurrentAsset] = useState(null);
+  const [folderAssets, setFolderAssets] = useState(null);
+  const [folderName, setFolderName]     = useState("");
 
   // ── Playback
-  const [playing, setPlaying]     = useState(false);
-  const [pos, setPos]             = useState(0);
-  const [dur, setDur]             = useState(0);
-  const [vol, setVol]             = useState(0.8);
+  const [playing, setPlaying] = useState(false);
+  const [pos, setPos]         = useState(0);
+  const [dur, setDur]         = useState(0);
+  const [vol, setVol]         = useState(0.8);
 
   // ── Music tracks
-  const [tracks, setTracks]       = useState([]);
+  const [tracks, setTracks]         = useState([]);
   const [activeTrackId, setActiveTrackId] = useState(null);
-  const [dragOver, setDragOver]   = useState(false);
+  const [dragOver, setDragOver]     = useState(false);
 
   // ── Markers
-  const [markers, setMarkers]     = useState([]);
-  const [selectedMId, setSelectedMId] = useState(null);
+  const [markers, setMarkers]           = useState([]);
+  const [selectedMId, setSelectedMId]   = useState(null);
   const [newMarkerColor, setNewMarkerColor] = useState("red");
-  const [projectName, setProjectName] = useState("Client Review");
-  const [exportFPS, setExportFPS] = useState(25);
+  const [projectName, setProjectName]   = useState("Client Review");
+  const [exportFPS, setExportFPS]       = useState(25);
 
   // ── Frame.io comment sync
-  const [syncing, setSyncing]     = useState(false);
-  const [syncMsg, setSyncMsg]     = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
 
   // ── Marker delete confirmation
-  const [deleteConfirm, setDeleteConfirm]             = useState(null); // { id, label }
+  const [deleteConfirm, setDeleteConfirm]                 = useState(null);
   const [suppressDeleteWarning, setSuppressDeleteWarning] = useState(false);
 
   // ── UI
-  const [tab, setTab]             = useState("tracks");
+  const [tab, setTab] = useState("tracks");
 
   // ── Refs
-  const videoRef         = useRef(null);
-  const audioRef         = useRef(null);
-  const rafRef           = useRef(null);
-  const startRef         = useRef(0);
-  const posRef           = useRef(0);
-  const waveStackRef     = useRef(null);
-  const markerRowRef     = useRef(null);
+  const videoRef     = useRef(null);
+  const audioRef     = useRef(null);
+  const rafRef       = useRef(null);
+  const startRef     = useRef(0);
+  const posRef       = useRef(0);
+  const waveStackRef = useRef(null);
+  const markerRowRef = useRef(null);
 
-  // Mirror refs — always hold the latest state value so callbacks
-  // can read them without being in any dependency array (avoids stale closures)
+  // Mirror refs
   const tracksRef        = useRef(tracks);
   const activeTrackIdRef = useRef(activeTrackId);
   const playingRef       = useRef(playing);
@@ -487,19 +497,36 @@ export default function MusicLayerV3() {
   useEffect(() => { playingRef.current       = playing;       }, [playing]);
   useEffect(() => { volRef.current           = vol;           }, [vol]);
 
-  const activeTrack = tracks.find(t => t.id === activeTrackId) || null;
-
-  // effectiveDur: video duration if video loaded, otherwise active track's own duration
+  const activeTrack  = tracks.find(t => t.id === activeTrackId) || null;
   const effectiveDur = currentAsset ? dur : (activeTrack?.audioDuration || dur || 0);
   useEffect(() => { durRef.current = effectiveDur; }, [effectiveDur]);
 
-  // ─── Connect token ───────────────────────────────────────────────────────
+  // ── Auto-fetch account_id on mount — V4 requires it in every endpoint path
+  useEffect(() => {
+    (async () => {
+      try {
+        const accts = await FIO.accounts("server-auth");
+        const list  = Array.isArray(accts) ? accts : (accts.data || []);
+        if (list[0]?.id) setAccountId(list[0].id);
+        else console.warn("Music Layer: no Frame.io accounts found for this token.");
+      } catch (e) {
+        console.warn("Music Layer: account_id fetch failed —", e.message);
+      }
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Connect token (manual reconnect flow)
   const connectToken = useCallback(async () => {
     if (!tokenInput.trim()) return;
     setConnStatus("connecting");
     try {
-      const me = await FIO.me(tokenInput.trim());
+      const me    = await FIO.me(tokenInput.trim());
+      const accts = await FIO.accounts(tokenInput.trim());
+      const list  = Array.isArray(accts) ? accts : (accts.data || []);
+      const acctId = list[0]?.id;
+      if (!acctId) throw new Error("No Frame.io accounts found for this token.");
       setToken(tokenInput.trim());
+      setAccountId(acctId);
       setConnStatus("ok");
       setConnMsg(me.email || me.name || "Connected");
     } catch (e) {
@@ -508,14 +535,23 @@ export default function MusicLayerV3() {
     }
   }, [tokenInput]);
 
-  // ─── Resolve Frame.io URL ────────────────────────────────────────────────
+  // ── Resolve Frame.io URL
   const handleResolve = useCallback(async () => {
     if (!urlInput.trim() || !token) return;
     setResolving(true);
     setResolveErr("");
     setFolderAssets(null);
     try {
-      const result = await resolveURL(token, urlInput.trim());
+      // Lazy-fetch accountId if the auto-init hasn't completed yet
+      let acctId = accountId;
+      if (!acctId) {
+        const accts = await FIO.accounts(token);
+        const list  = Array.isArray(accts) ? accts : (accts.data || []);
+        acctId = list[0]?.id;
+        if (!acctId) throw new Error("Could not determine Frame.io account ID. Check your token has account access.");
+        setAccountId(acctId);
+      }
+      const result = await resolveURL(token, acctId, urlInput.trim());
       if (result.type === "video") {
         const url = videoURL(result.asset);
         if (!url) throw new Error("No playable URL found for this asset.");
@@ -533,7 +569,7 @@ export default function MusicLayerV3() {
       setResolveErr(e.message);
     }
     setResolving(false);
-  }, [urlInput, token, projectName]);
+  }, [urlInput, token, accountId, projectName]);
 
   const selectFolderAsset = useCallback((a) => {
     setCurrentAsset(a);
@@ -541,7 +577,7 @@ export default function MusicLayerV3() {
     if (!projectName || projectName === "Client Review") setProjectName(a.name);
   }, [projectName]);
 
-  // ─── Video events ────────────────────────────────────────────────────────
+  // ── Video events
   useEffect(() => {
     const v = videoRef.current;
     if (!v || !currentAsset?.url) return;
@@ -561,7 +597,7 @@ export default function MusicLayerV3() {
     };
   }, [currentAsset?.url]);
 
-  // ─── Music track routing ─────────────────────────────────────────────────
+  // ── Music track routing
   const trackForTime = useCallback((time, list) => {
     for (const t of list) {
       const inP  = t.inPoint  ?? 0;
@@ -571,7 +607,7 @@ export default function MusicLayerV3() {
     return null;
   }, []);
 
-  // ─── Playback ────────────────────────────────────────────────────────────
+  // ── Playback
   const handlePlay = useCallback(() => {
     const v = videoRef.current;
     if (playing) {
@@ -586,7 +622,7 @@ export default function MusicLayerV3() {
       const track = trackForTime(pos, tracks);
       if (track && audioRef.current) {
         if (audioRef.current.src !== track.url) audioRef.current.src = track.url;
-        audioRef.current.volume  = vol;
+        audioRef.current.volume      = vol;
         audioRef.current.currentTime = Math.max(0, pos - (track.inPoint ?? 0) + (track.audioOffset ?? 0));
         audioRef.current.play().catch(() => {});
       }
@@ -601,15 +637,15 @@ export default function MusicLayerV3() {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
   }, []);
 
-  // RAF loop for music-only mode (no video loaded)
+  // RAF loop for music-only mode
   useEffect(() => {
-    if (currentAsset) return; // video element handles time
+    if (currentAsset) return;
     if (playing) {
       startRef.current = performance.now();
       posRef.current   = pos;
       const tick = () => {
-        const next = posRef.current + (performance.now() - startRef.current) / 1000;
-        const maxDur = durRef.current || 300; // reads from ref — always current active track's duration
+        const next   = posRef.current + (performance.now() - startRef.current) / 1000;
+        const maxDur = durRef.current || 300;
         if (next >= maxDur) { setPos(maxDur); setPlaying(false); return; }
         setPos(next);
         rafRef.current = requestAnimationFrame(tick);
@@ -617,36 +653,30 @@ export default function MusicLayerV3() {
       rafRef.current = requestAnimationFrame(tick);
     } else cancelAnimationFrame(rafRef.current);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [playing, currentAsset]); // removed dur dep — reads from ref now
+  }, [playing, currentAsset]);
 
   // Volume sync
   useEffect(() => { if (audioRef.current) audioRef.current.volume = vol; }, [vol]);
 
-  // Auto-route music — only applies when tracks have explicit in/out regions set.
-  // Without defined regions every track covers 0→∞, so trackForTime always returns
-  // the first track and fights manual selection. Guard against that here.
+  // Auto-route music (only when in/out arrangement is defined)
   useEffect(() => {
     if (!playing || tracks.length === 0) return;
     const hasArrangement = tracks.some(t => t.inPoint != null || t.outPoint != null);
-    if (!hasArrangement) return; // trust manual selection when no arrangement is defined
+    if (!hasArrangement) return;
     const track = trackForTime(pos, tracks);
     if (!track) { audioRef.current?.pause(); return; }
     const a = audioRef.current;
     if (!a) return;
     if (a.src !== track.url) {
-      a.src = track.url;
-      a.volume = vol;
-      a.currentTime = Math.max(0, pos - (track.inPoint ?? 0) + (track.audioOffset ?? 0));
+      a.src          = track.url;
+      a.volume       = vol;
+      a.currentTime  = Math.max(0, pos - (track.inPoint ?? 0) + (track.audioOffset ?? 0));
       a.play().catch(() => {});
       setActiveTrackId(track.id);
     }
   }, [Math.floor(pos * 4), playing]);
 
-  // ─── Seek ────────────────────────────────────────────────────────────────
-  // seekTo ONLY seeks position — it never switches tracks.
-  // Track switching is exclusively selectTrack's job.
-  // The old version called trackForTime() which always returned Track 1
-  // when no in/out points are set, causing the "always plays Track 1" bug.
+  // ── Seek
   const seekTo = useCallback((t) => {
     const activeT  = tracksRef.current.find(x => x.id === activeTrackIdRef.current);
     const trackDur = activeT?.audioDuration || durRef.current || 300;
@@ -658,19 +688,18 @@ export default function MusicLayerV3() {
     const v = videoRef.current;
     if (v) v.currentTime = s;
 
-    // Seek within whichever track is currently active — never switch
     if (activeT && audioRef.current) {
       audioRef.current.volume      = volRef.current;
       audioRef.current.currentTime = Math.max(0, s - (activeT.inPoint ?? 0));
       if (playingRef.current) audioRef.current.play().catch(() => {});
     }
-  }, []); // completely stable — all values read from refs
+  }, []);
 
-  // ─── Add marker at playhead (M key or button) ────────────────────────────
+  // ── Add marker at playhead
   const addMarkerAtPlayhead = useCallback(() => {
     if (!activeTrack) return;
-    const trackDur  = activeTrack.audioDuration || dur || 1;
-    const fraction  = trackDur > 0 ? pos / trackDur : 0;
+    const trackDur = activeTrack.audioDuration || dur || 1;
+    const fraction = trackDur > 0 ? pos / trackDur : 0;
     const id = uid();
     setMarkers(prev => [...prev, {
       id,
@@ -688,24 +717,18 @@ export default function MusicLayerV3() {
     setTab("markers");
   }, [pos, dur, activeTrack, newMarkerColor]);
 
-  // ─── Keyboard shortcuts ───────────────────────────────────────────────────
+  // ── Keyboard shortcuts
   useEffect(() => {
     const onKey = (e) => {
       const inField = e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA";
-      if (e.code === "Space" && !inField) {
-        e.preventDefault();
-        handlePlay();
-      }
-      if (e.code === "KeyM" && !inField) {
-        e.preventDefault();
-        addMarkerAtPlayhead();
-      }
+      if (e.code === "Space" && !inField) { e.preventDefault(); handlePlay(); }
+      if (e.code === "KeyM"  && !inField) { e.preventDefault(); addMarkerAtPlayhead(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [handlePlay, addMarkerAtPlayhead]);
 
-  // ─── Add marker ──────────────────────────────────────────────────────────
+  // ── Add marker via marker strip click
   const handleMarkerRow = useCallback((e) => {
     const rect = markerRowRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -716,7 +739,7 @@ export default function MusicLayerV3() {
     setMarkers(prev => [...prev, {
       id, time, fraction,
       colorId:    newMarkerColor,
-      label:      "", note:       "",
+      label:      "", note: "",
       trackId:    at?.id    || null,
       trackName:  at?.name  || null,
       trackColor: at?.color || null,
@@ -726,14 +749,13 @@ export default function MusicLayerV3() {
     setTab("markers");
   }, [effectiveDur, newMarkerColor, activeTrack]);
 
-  // ─── Track file handling ─────────────────────────────────────────────────
+  // ── Track file handling
   const handleFiles = useCallback((files) => {
     const valid = Array.from(files).filter(f =>
       f.type.startsWith("audio/") || /\.(mp3|wav|aac|flac|ogg|m4a)$/i.test(f.name)
     );
     if (!valid.length) return;
 
-    // Add tracks immediately with flat placeholder so UI responds instantly
     const newTracks = valid.map((f, i) => ({
       id: uid(), name: f.name.replace(/\.[^.]+$/, ""),
       url: URL.createObjectURL(f),
@@ -745,10 +767,8 @@ export default function MusicLayerV3() {
     }));
 
     const isFirstBatch = tracks.length === 0;
-
     setTracks(prev => [...prev, ...newTracks]);
 
-    // Audio element setup — outside setTracks to avoid StrictMode double-invoke
     if (isFirstBatch) {
       setActiveTrackId(newTracks[0].id);
       if (audioRef.current) {
@@ -757,7 +777,6 @@ export default function MusicLayerV3() {
       }
     }
 
-    // Decode each file: get real waveform AND duration from the same decode pass
     valid.forEach(async (f, i) => {
       const id = newTracks[i].id;
       const { wave, duration } = await analyseAudio(f);
@@ -765,7 +784,6 @@ export default function MusicLayerV3() {
         ? { ...t, wave, analysing: false, audioDuration: duration }
         : t
       ));
-      // Set global dur as fallback only — effectiveDur derives from active track
       if (i === 0 && duration > 0) setDur(prev => prev || duration);
     });
   }, [vol, tracks.length]);
@@ -791,7 +809,6 @@ export default function MusicLayerV3() {
   }, []);
 
   const selectTrack = useCallback((id, overridePos = null) => {
-    // Read current values from refs — always fresh, no stale closure
     const currentActiveId = activeTrackIdRef.current;
     const currentTracks   = tracksRef.current;
     const currentPos      = posRef.current;
@@ -801,7 +818,6 @@ export default function MusicLayerV3() {
     const newTrack = currentTracks.find(x => x.id === id);
     if (!newTrack) return;
 
-    // Save current position to the outgoing track
     setTracks(prev => prev.map(t =>
       t.id === currentActiveId ? { ...t, savedPos: currentPos } : t
     ));
@@ -814,20 +830,18 @@ export default function MusicLayerV3() {
     startRef.current = performance.now();
 
     if (audioRef.current) {
-      audioRef.current.src          = newTrack.url;
-      audioRef.current.volume       = volRef.current;
-      audioRef.current.currentTime  = Math.max(0, restorePos - (newTrack.inPoint ?? 0));
+      audioRef.current.src         = newTrack.url;
+      audioRef.current.volume      = volRef.current;
+      audioRef.current.currentTime = Math.max(0, restorePos - (newTrack.inPoint ?? 0));
       if (playingRef.current) audioRef.current.play().catch(() => {});
     }
-  }, []); // stable — reads all mutable values from refs
+  }, []);
 
-  // ─── Waveform click — seek to clicked position, switch track if needed ───
   const handleWaveformClick = useCallback((e, trackId) => {
     const rect     = e.currentTarget.getBoundingClientRect();
     const PAD      = 13;
     const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left - PAD) / (rect.width - PAD * 2)));
 
-    // Use the CLICKED track's own duration — not the global dur
     const clickedTrack = tracksRef.current.find(t => t.id === trackId);
     const trackDur     = clickedTrack?.audioDuration || durRef.current || 0;
     const newPos       = fraction * trackDur;
@@ -837,15 +851,15 @@ export default function MusicLayerV3() {
     } else {
       seekTo(newPos);
     }
-  }, [selectTrack, seekTo]); // both stable — no stale closure possible
+  }, [selectTrack, seekTo]);
 
-  // ─── Marker updates ──────────────────────────────────────────────────────
+  // ── Marker updates
   const updateMarker = (id, f, v) => setMarkers(prev => prev.map(m => m.id === id ? { ...m, [f]: v } : m));
   const removeMarker = (id) => { setMarkers(prev => prev.filter(m => m.id !== id)); setSelectedMId(null); };
 
-  // ─── Frame.io comment sync ───────────────────────────────────────────────
+  // ── Frame.io comment sync
   const syncToFrameio = useCallback(async () => {
-    if (!token || !currentAsset?.id) return;
+    if (!token || !currentAsset?.id || !accountId) return;
     setSyncing(true); setSyncMsg("");
     try {
       const unsynced = markers.filter(m => !m.fioCommentId);
@@ -854,7 +868,7 @@ export default function MusicLayerV3() {
         const labelLine = m.label ? `\n${m.label}` : "";
         const noteLine  = m.note  ? `\n${m.note}`  : "";
         const text = `${trackLine}${labelLine}${noteLine}\n\n— via Music Layer`;
-        const res = await FIO.postComment(token, currentAsset.id, text, Math.round(m.time));
+        const res = await FIO.postComment(token, accountId, currentAsset.id, text, Math.round(m.time));
         setMarkers(prev => prev.map(x => x.id === m.id ? { ...x, fioCommentId: res.id } : x));
       }
       setSyncMsg(`${unsynced.length} comment${unsynced.length !== 1 ? "s" : ""} posted to Frame.io`);
@@ -862,14 +876,15 @@ export default function MusicLayerV3() {
       setSyncMsg(`Error: ${e.message}`);
     }
     setSyncing(false);
-  }, [token, currentAsset, markers]);
+  }, [token, accountId, currentAsset, markers]);
 
   const loadFromFrameio = useCallback(async () => {
-    if (!token || !currentAsset?.id) return;
+    if (!token || !currentAsset?.id || !accountId) return;
     setSyncing(true); setSyncMsg("");
     try {
-      const comments = await FIO.getComments(token, currentAsset.id);
-      const imported = comments
+      const comments = await FIO.getComments(token, accountId, currentAsset.id);
+      const list     = Array.isArray(comments) ? comments : (comments.data || []);
+      const imported = list
         .filter(c => typeof c.timestamp === "number")
         .map(c => ({
           id: uid(), time: c.timestamp,
@@ -888,17 +903,17 @@ export default function MusicLayerV3() {
       setSyncMsg(`Error: ${e.message}`);
     }
     setSyncing(false);
-  }, [token, currentAsset, markers]);
+  }, [token, accountId, currentAsset, markers]);
 
-  // ─── XML export ──────────────────────────────────────────────────────────
+  // ── XML export
   const handleExport = useCallback(() => {
     if (!markers.length) return;
-    const xml = buildXML(markers, projectName, exportFPS);
+    const xml  = buildXML(markers, projectName, exportFPS);
     const slug = projectName.replace(/\s+/g,"_").replace(/[^a-z0-9_-]/gi,"");
     downloadXML(xml, `${slug}_markers.xml`);
   }, [markers, projectName, exportFPS]);
 
-  // ─── Derived ─────────────────────────────────────────────────────────────
+  // ── Derived
   const pct = effectiveDur ? (pos / effectiveDur) * 100 : 0;
 
   const pbAnim = useMemo(() => [
@@ -911,6 +926,7 @@ export default function MusicLayerV3() {
   const unsyncedCount = markers.filter(m => !m.fioCommentId).length;
 
   // ─── Render ───────────────────────────────────────────────────────────────
+
   return (
     <>
       <style>{CSS}</style>
@@ -948,7 +964,11 @@ export default function MusicLayerV3() {
           ) : (
             <div className="ml3-token-wrap">
               <span className="ml3-status ml3-status-ok">✓ {connMsg}</span>
-              <button className="ml3-btn ml3-btn-ghost" style={{ fontSize:10 }} onClick={() => { setToken(""); setConnStatus("idle"); setConnMsg(""); }}>
+              <button
+                className="ml3-btn ml3-btn-ghost"
+                style={{ fontSize:10 }}
+                onClick={() => { setToken(""); setConnStatus("idle"); setConnMsg(""); }}
+              >
                 Disconnect
               </button>
             </div>
@@ -975,7 +995,11 @@ export default function MusicLayerV3() {
               <button className="ml3-btn ml3-btn-ghost" onClick={() => { setCurrentAsset(null); setUrlInput(""); }}>✕</button>
             )}
             {resolveErr && <span className="ml3-status ml3-status-err">{resolveErr}</span>}
-            {currentAsset && <span className="ml3-status ml3-status-ok" style={{ maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>✓ {currentAsset.name}</span>}
+            {currentAsset && (
+              <span className="ml3-status ml3-status-ok" style={{ maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                ✓ {currentAsset.name}
+              </span>
+            )}
           </div>
         </div>
 
@@ -988,12 +1012,7 @@ export default function MusicLayerV3() {
             {/* Video */}
             <div className="ml3-video-wrap">
               {currentAsset?.url ? (
-                <video
-                  ref={videoRef}
-                  controls={false}
-                  playsInline
-                  style={{ aspectRatio:"16/9" }}
-                />
+                <video ref={videoRef} controls={false} playsInline style={{ aspectRatio:"16/9" }} />
               ) : (
                 <div className="ml3-placeholder">
                   <svg width="34" height="34" viewBox="0 0 34 34" fill="none" style={{ opacity:.07 }}>
@@ -1057,7 +1076,7 @@ export default function MusicLayerV3() {
                 Click to seek · Shift+click waveform to add marker · Shift+click marker to remove · Space = play · M = mark
               </div>
 
-              {/* Marker strip — thin row, click to add, flags show here */}
+              {/* Marker strip */}
               <div className="ml3-marker-row" ref={markerRowRef} onClick={handleMarkerRow}>
                 {markers.map(m => {
                   const c = PREMIERE_COLORS.find(x => x.id === m.colorId) || PREMIERE_COLORS[0];
@@ -1081,21 +1100,11 @@ export default function MusicLayerV3() {
               {/* Delete confirmation banner */}
               {deleteConfirm && (
                 <div className="ml3-delete-confirm">
-                  <span className="ml3-dc-text">
-                    Remove "{deleteConfirm.label || "marker"}"?
-                  </span>
-                  <button className="ml3-dc-remove" onClick={() => {
-                    removeMarker(deleteConfirm.id);
-                    setDeleteConfirm(null);
-                  }}>Remove</button>
-                  <button className="ml3-dc-cancel" onClick={() => setDeleteConfirm(null)}>
-                    Cancel
-                  </button>
+                  <span className="ml3-dc-text">Remove "{deleteConfirm.label || "marker"}"?</span>
+                  <button className="ml3-dc-remove" onClick={() => { removeMarker(deleteConfirm.id); setDeleteConfirm(null); }}>Remove</button>
+                  <button className="ml3-dc-cancel" onClick={() => setDeleteConfirm(null)}>Cancel</button>
                   <label className="ml3-dc-suppress">
-                    <input
-                      type="checkbox"
-                      onChange={e => setSuppressDeleteWarning(e.target.checked)}
-                    />
+                    <input type="checkbox" onChange={e => setSuppressDeleteWarning(e.target.checked)} />
                     Don't ask again
                   </label>
                 </div>
@@ -1108,7 +1117,7 @@ export default function MusicLayerV3() {
                 tracks.map(t => {
                   const isActive = t.id === activeTrackId;
                   const rowH     = isActive ? 68 : 50;
-                  const PAD      = 13; // matches padding:0 13px in CSS
+                  const PAD      = 13;
 
                   return (
                     <div
@@ -1121,7 +1130,6 @@ export default function MusicLayerV3() {
                           const fraction = Math.max(0, Math.min(1,
                             (e.clientX - rect.left - PAD) / (rect.width - PAD * 2)
                           ));
-                          // Check if clicking near an existing marker (within 1.5%)
                           const SNAP = 0.015;
                           const near = markers.find(m => Math.abs((m.fraction ?? 0) - fraction) < SNAP);
                           if (near) {
@@ -1132,13 +1140,12 @@ export default function MusicLayerV3() {
                             }
                             return;
                           }
-                          // Otherwise add new marker
                           const time = fraction * (t.audioDuration || dur || 0);
                           const id   = uid();
                           setMarkers(prev => [...prev, {
                             id, time, fraction,
                             colorId:    newMarkerColor,
-                            label:      "", note:       "",
+                            label:      "", note: "",
                             trackId:    t.id,
                             trackName:  t.name,
                             trackColor: t.color,
@@ -1151,14 +1158,12 @@ export default function MusicLayerV3() {
                         }
                       }}
                     >
-                      {/* Track label */}
                       <div className="ml3-wrow-label">
                         <div style={{ width:5, height:5, borderRadius:"50%", background:t.color, flexShrink:0 }} />
                         <span className="ml3-wrow-name">{t.name}</span>
                         {t.analysing && <span className="ml3-wrow-analysing">Analysing…</span>}
                       </div>
 
-                      {/* Waveform SVG — only active track shows playback progress */}
                       <WaveformSVG
                         waveform={t.wave}
                         progress={isActive && t.audioDuration ? pos / t.audioDuration : 0}
@@ -1167,7 +1172,6 @@ export default function MusicLayerV3() {
                         dimmed={!isActive}
                       />
 
-                      {/* Marker lines — only this track's markers, calc() accounts for row padding */}
                       {markers.filter(m => m.trackId === t.id).map(m => {
                         const c = PREMIERE_COLORS.find(x => x.id === m.colorId) || PREMIERE_COLORS[0];
                         const f = m.fraction ?? 0;
@@ -1186,7 +1190,6 @@ export default function MusicLayerV3() {
                   );
                 })
               )}
-
             </div>
 
             {/* Transport */}
@@ -1296,7 +1299,6 @@ export default function MusicLayerV3() {
             {/* ── Markers tab ── */}
             {tab === "markers" && (
               <div className="ml3-tab-body" style={{ display:"flex", flexDirection:"column" }}>
-                {/* New marker colour */}
                 <div style={{ padding:"8px 10px", borderBottom:"1px solid #131325" }}>
                   <div style={{ fontSize:9, color:"#606078", textTransform:"uppercase", letterSpacing:".1em", marginBottom:5 }}>New marker colour</div>
                   <div className="ml3-cpick">
@@ -1309,12 +1311,11 @@ export default function MusicLayerV3() {
                   </div>
                 </div>
 
-                {/* Marker list */}
                 <div style={{ flex:1, padding:"6px 0" }}>
                   {markers.length === 0
                     ? <div className="ml3-empty">No markers yet.<br/>Click the dashed row above the scrubber to add one.</div>
                     : [...markers].sort((a,b) => a.time - b.time).map(m => {
-                        const c = PREMIERE_COLORS.find(x => x.id === m.colorId) || PREMIERE_COLORS[0];
+                        const c   = PREMIERE_COLORS.find(x => x.id === m.colorId) || PREMIERE_COLORS[0];
                         const isOn = m.id === selectedMId;
                         return (
                           <div key={m.id} className={`ml3-mitem${isOn ? " on" : ""}`}
@@ -1333,7 +1334,6 @@ export default function MusicLayerV3() {
                               <button className="ml3-rm" style={{ fontSize:13 }} onClick={e => { e.stopPropagation(); removeMarker(m.id); }}>×</button>
                             </div>
 
-                            {/* Track chip — always visible */}
                             {m.trackName && (
                               <div style={{ marginBottom:4 }}>
                                 <span className="ml3-track-chip" style={{ background:`${m.trackColor || "#888"}18`, color: m.trackColor || "#888", border:`1px solid ${m.trackColor || "#888"}30` }}>
@@ -1365,28 +1365,25 @@ export default function MusicLayerV3() {
                   }
                 </div>
 
-                {/* Frame.io sync + XML export */}
                 <div className="ml3-export-zone">
-                  {/* Frame.io sync row */}
                   {token && currentAsset && (
                     <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:8, paddingBottom:8, borderBottom:"1px solid #131325" }}>
                       <button className="ml3-btn ml3-btn-amber"
                         style={{ fontSize:10, padding:"4px 9px" }}
                         onClick={syncToFrameio}
-                        disabled={syncing || unsyncedCount === 0}
+                        disabled={syncing || unsyncedCount === 0 || !accountId}
                       >
                         {syncing ? "Syncing…" : `↑ Post ${unsyncedCount} to Frame.io`}
                       </button>
                       <button className="ml3-btn ml3-btn-ghost"
                         style={{ fontSize:10, padding:"4px 9px" }}
                         onClick={loadFromFrameio}
-                        disabled={syncing}
+                        disabled={syncing || !accountId}
                       >↓ Load comments</button>
                       {syncMsg && <span style={{ fontSize:9, color:"#10B981" }}>{syncMsg}</span>}
                     </div>
                   )}
 
-                  {/* Export row */}
                   <div style={{ display:"flex", gap:6, marginBottom:6 }}>
                     <input className="ml3-proj-inp" placeholder="Project name…"
                       value={projectName} onChange={e => setProjectName(e.target.value)} />
