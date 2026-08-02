@@ -6,26 +6,52 @@
 
 const UPSTREAM_BASE = "https://api.frame.io/v4";
 
-// Work out which Frame.io endpoint was asked for.
-//
-// Vercel normally fills req.query.path from the [...path] filename, but a rewrite
-// whose destination omits the capture group leaves it empty — which silently
-// collapsed every request down to a bare https://api.frame.io/v4/ and made the
-// upstream answer "no route found for GET /v4" no matter what was requested.
-// Fall back to the raw URL so the proxy works under either routing behaviour.
-export function resolveSubPath(req) {
-  const raw = req.query?.path;
-  const segments = Array.isArray(raw) ? raw : raw ? [raw] : [];
-  const fromQuery = segments.join("/").replace(/^\/+/, "");
-  if (fromQuery) return fromQuery;
+// Vercel names a catch-all route param after the raw bracket contents, so this
+// file's param arrives as req.query["...path"] — dots included — and never as
+// req.query.path. Reading the wrong key left the path empty, which collapsed
+// every request to a bare https://api.frame.io/v4/ ("no route found for GET
+// /v4"). Both keys are checked below, but the raw URL is preferred since it is
+// the one source Vercel does not decorate with route params.
+const ROUTE_PARAM_KEYS = ["path", "...path"];
 
+// Work out which Frame.io endpoint was asked for.
+export function resolveSubPath(req) {
   const pathname = String(req.url || "").split("?")[0];
   const match = pathname.match(/^\/api\/frameio\/(.+)$/);
-  if (!match) return "";
+  if (match) {
+    const candidate = decodeURIComponent(match[1]).replace(/^\/+/, "");
+    // Guard against an un-substituted rewrite destination literal ("[...path]").
+    if (candidate && !candidate.startsWith("[")) return candidate;
+  }
 
-  const candidate = decodeURIComponent(match[1]).replace(/^\/+/, "");
-  // Guard against an un-substituted rewrite destination literal ("[...path]").
-  return candidate.startsWith("[") ? "" : candidate;
+  for (const key of ROUTE_PARAM_KEYS) {
+    const raw = req.query?.[key];
+    const segments = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    const joined = segments.join("/").replace(/^\/+/, "");
+    if (joined) return joined;
+  }
+  return "";
+}
+
+// Build the query string to forward upstream.
+//
+// req.query carries Vercel's injected route param alongside the real ones, and
+// forwarding it made Frame.io reject the call outright ("Unexpected field:
+// ...path"). Prefer the raw URL's query string, which contains only what the
+// caller actually sent.
+export function resolveQuery(req) {
+  const rawQuery = String(req.url || "").split("?").slice(1).join("?");
+  const params = new URLSearchParams(rawQuery);
+  if ([...params.keys()].length === 0 && req.query) {
+    for (const [key, value] of Object.entries(req.query)) {
+      if (Array.isArray(value)) value.forEach(v => params.append(key, v));
+      else if (value != null) params.append(key, value);
+    }
+  }
+  for (const key of [...params.keys()]) {
+    if (ROUTE_PARAM_KEYS.includes(key)) params.delete(key);
+  }
+  return params.toString();
 }
 
 export default async function handler(req, res) {
@@ -50,13 +76,11 @@ export default async function handler(req, res) {
     return res.status(400).json({
       error:   "Bad request",
       message: "Could not determine the Frame.io endpoint from the request path.",
-      received: { url: req.url, queryPath: req.query?.path ?? null },
+      received: { url: req.url, query: req.query ?? null },
     });
   }
 
-  const { path: _p, ...forwardedParams } = req.query || {};
-  const qs = new URLSearchParams(forwardedParams).toString();
-
+  const qs = resolveQuery(req);
   const frameioURL = `${UPSTREAM_BASE}/${subPath}${qs ? `?${qs}` : ""}`;
   res.setHeader("x-proxy-upstream", frameioURL);
 
