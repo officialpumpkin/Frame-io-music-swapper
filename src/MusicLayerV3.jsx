@@ -520,8 +520,9 @@ const CSS = `
   .bms-transport { gap:7px; }
 }
 
-/* The full lockup fits to 360px; below that drop back to the mark alone. */
-@media (max-width:360px) {
+/* The full lockup fits at 360px (a very common Android width); only below it
+   does the bar run out of room, so drop back to the mark alone there. */
+@media (max-width:359px) {
   .bms-wordmark, .bms-rule { display:none; }
 }
 
