@@ -41,14 +41,24 @@ async function apiRequest(token, method, path, body) {
   return res.json();
 }
 
+// V4 wraps every successful payload in a `data` envelope; V2 returned the
+// object directly. Unwrap once here so callers see the same shape as before.
+const unwrap = (r) => (r && typeof r === "object" && "data" in r ? r.data : r);
+
+// media_links variants must be named individually — a bare `include=media_links`
+// returns nothing. `original` is the only one a <video> element can play
+// natively; `efficient` and `high_quality` are both HLS manifests.
+const MEDIA_INCLUDE =
+  "include=media_links.original,media_links.efficient,media_links.thumbnail";
+
 const FIO = {
-  me:          (t)                              => apiRequest(t, "GET",  "/me"),
-  accounts:    (t)                              => apiRequest(t, "GET",  "/accounts"),
+  me:          (t)                              => apiRequest(t, "GET",  "/me").then(unwrap),
+  accounts:    (t)                              => apiRequest(t, "GET",  "/accounts").then(unwrap),
   // V4: assets → files, account_id required in every path
-  asset:       (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/files/${id}?include=media_links.efficient`),
-  children:    (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/files/${id}/children?type=file&page=1&page_size=40`),
-  reviewLink:  (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/review_links/${id}`),
-  getComments: (t, acct, assetId)               => apiRequest(t, "GET",  `/accounts/${acct}/files/${assetId}/comments`),
+  asset:       (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/files/${id}?${MEDIA_INCLUDE}`).then(unwrap),
+  children:    (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/files/${id}/children?type=file&page=1&page_size=40&${MEDIA_INCLUDE}`).then(unwrap),
+  reviewLink:  (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/review_links/${id}`).then(unwrap),
+  getComments: (t, acct, assetId)               => apiRequest(t, "GET",  `/accounts/${acct}/files/${assetId}/comments`).then(unwrap),
   postComment: (t, acct, assetId, text, timestamp) =>
     apiRequest(t, "POST", `/accounts/${acct}/files/${assetId}/comments`, { text, timestamp }),
 };
@@ -116,12 +126,20 @@ async function resolveURL(token, accountId, url) {
 
 // Pick best available playback URL from an asset
 function videoURL(asset) {
-  // V4 uses media_links; fall back to V2 transcodes for compatibility
+  // V4 uses media_links; fall back to V2 transcodes for compatibility.
+  // Note V4 exposes download_url / inline_url, not url — and `efficient` and
+  // `high_quality` are HLS manifests that only Safari plays without hls.js, so
+  // the original MP4 (served inline) is preferred for playback everywhere.
   const ml = asset.media_links || {};
   const t  = asset.transcodes  || {};
   return (
-    ml.efficient?.url    ||
-    ml.high_quality?.url ||
+    ml.original?.inline_url     ||
+    ml.original?.download_url   ||
+    ml.efficient?.url           ||
+    ml.high_quality?.url        ||
+    // Last resort: HLS. Plays in Safari, needs hls.js elsewhere.
+    ml.efficient?.download_url  ||
+    ml.high_quality?.download_url ||
     t.h264_1080 || t.h264_720 || t.h264_540 || t.h264_360 ||
     asset.original || null
   );
@@ -561,7 +579,7 @@ export default function MusicLayerV3() {
         setFolderName(result.folderName);
         setFolderAssets(result.assets.map(a => ({
           id: a.id, name: a.name,
-          thumb: a.transcodes?.thumbnail_small || a.thumb || null,
+          thumb: a.media_links?.thumbnail?.url || a.transcodes?.thumbnail_small || a.thumb || null,
           url: videoURL(a),
         })));
       }
