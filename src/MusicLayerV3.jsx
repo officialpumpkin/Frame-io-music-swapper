@@ -294,6 +294,17 @@ const CSS = `
 .bms-chip { font-size:10px; padding:4px 9px; border-radius:6px; font-weight:500; white-space:nowrap; }
 .bms-chip-ok  { background:#10B98122; color:var(--green); border:1px solid #10B98140; }
 .bms-chip-err { background:#EF444422; color:var(--red);   border:1px solid #EF444440; }
+/* Asset names are long; the chip must never widen the bar past the viewport. */
+.bms-chip-asset { max-width:min(34vw, 320px); overflow:hidden; text-overflow:ellipsis; }
+
+.bms-loader-desktop { display:flex; align-items:center; gap:6px; min-width:0; }
+.bms-only-mobile { display:none !important; }
+.bms-loader-row {
+  display:flex; gap:6px; flex-shrink:0; background:var(--surface);
+  border-bottom:1px solid var(--line);
+  padding:0 max(12px, env(safe-area-inset-left)) 10px max(12px, env(safe-area-inset-right));
+}
+.bms-loader-row .bms-input { flex:1; min-width:0; }
 
 /* ── Stage ───────────────────────────────────────────────────────────────── */
 .bms-body { flex:1; min-height:0; display:flex; }
@@ -481,7 +492,8 @@ const CSS = `
 
 /* ── Narrow / mobile ─────────────────────────────────────────────────────── */
 @media (max-width:880px) {
-  .bms-url, .bms-loader-desktop { display:none; }
+  .bms-url, .bms-loader-desktop { display:none !important; }
+  .bms-only-mobile { display:grid !important; }
   .bms-powered { display:none; }
 
   /* Tracks become a bottom sheet rather than a side panel. */
@@ -503,6 +515,8 @@ const CSS = `
   .bms-top { height:50px; gap:8px; }
   .bms-wordmark { display:none; }
   .bms-rule { display:none; }
+  /* The loaded video is its own confirmation at this width. */
+  .bms-chip-asset { display:none; }
   .bms-title { font-size:10px; letter-spacing:.1em; }
   .bms-vol input[type=range] { display:none; }
   .bms-transport { gap:7px; }
