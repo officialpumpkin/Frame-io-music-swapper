@@ -313,6 +313,10 @@ const CSS = `
 .bms-stage {
   position:relative; flex:1; min-height:0; background:#000;
   display:grid; place-items:center; overflow:hidden;
+  /* Explicit tracks matter: with auto tracks the row grows to fit the video, so
+     the video's own max-height:100% resolves against that grown row and never
+     binds. A 9:16 cut then overflows and is cropped instead of pillarboxed. */
+  grid-template:minmax(0,1fr) / minmax(0,1fr);
 }
 /* No fixed aspect ratio: the video reports its own, so 16:9 and 9:16 both sit
    centred and correctly letter/pillarboxed. */
