@@ -46,18 +46,22 @@ async function fetchWithProgress(url, onProgress) {
   return out;
 }
 
-// Walk the MP4 box tree looking for a sound handler. Determines whether there is
-// original audio to mix under, so an asset without any is handled gracefully
-// instead of failing inside ffmpeg on an unmapped [0:a] stream.
-export function mp4HasAudio(bytes) {
+// Read what the container itself says about the file: whether there is original
+// audio to mix under (so an asset without any doesn't fail inside ffmpeg on an
+// unmapped [0:a] stream), and the exact duration.
+//
+// Taking duration from the file rather than the <video> element means an export
+// works whether or not the player has finished loading metadata, and guarantees
+// the rendered music is exactly as long as the picture.
+export function readMp4Info(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const boxType = (o) => String.fromCharCode(bytes[o], bytes[o+1], bytes[o+2], bytes[o+3]);
   const CONTAINERS = ["moov", "trak", "mdia", "minf", "stbl"];
-  let found = false;
+  const info = { hasAudio: false, durationSec: 0 };
 
   const walk = (start, end, depth) => {
     let o = start;
-    while (o + 8 <= end && depth < 8 && !found) {
+    while (o + 8 <= end && depth < 8) {
       let size   = dv.getUint32(o);
       const type = boxType(o + 4);
       let header = 8;
@@ -72,10 +76,24 @@ export function mp4HasAudio(bytes) {
 
       const inner = o + header;
       const innerEnd = Math.min(o + size, end);
+
       // hdlr: 4 bytes version/flags, 4 bytes pre_defined, then handler_type.
       if (type === "hdlr" && inner + 12 <= end && boxType(inner + 8) === "soun") {
-        found = true;
-        return;
+        info.hasAudio = true;
+      }
+      // mvhd: version/flags, then creation/modification, timescale, duration.
+      if (type === "mvhd" && inner + 4 <= end) {
+        const version = bytes[inner];
+        const base = inner + 4 + (version === 1 ? 16 : 8);
+        if (version === 1 && base + 12 <= end) {
+          const ts = dv.getUint32(base);
+          const d  = Number(dv.getBigUint64(base + 4));
+          if (ts) info.durationSec = d / ts;
+        } else if (base + 8 <= end) {
+          const ts = dv.getUint32(base);
+          const d  = dv.getUint32(base + 4);
+          if (ts) info.durationSec = d / ts;
+        }
       }
       if (CONTAINERS.includes(type)) walk(inner, innerEnd, depth + 1);
       o += size;
@@ -83,7 +101,7 @@ export function mp4HasAudio(bytes) {
   };
 
   walk(0, bytes.length, 0);
-  return found;
+  return info;
 }
 
 // ─── Music arrangement → PCM ──────────────────────────────────────────────────
@@ -192,8 +210,12 @@ export async function exportWithMusic({
     onPhase({ phase: "Downloading video", progress: p })
   );
 
+  // The container is the authority on length; the player may not have loaded.
+  const info = readMp4Info(videoBytes);
+  const length = info.durationSec || durationSec;
+
   onPhase({ phase: "Rendering music", progress: 0 });
-  const mix = await renderMusicMix({ tracks, activeTrackId, durationSec, volume });
+  const mix = await renderMusicMix({ tracks, activeTrackId, durationSec: length, volume });
   const wavBytes = audioBufferToWav(mix);
 
   onPhase({ phase: "Loading encoder", progress: 0 });
@@ -210,7 +232,7 @@ export async function exportWithMusic({
 
   // normalize=0 keeps both inputs at their own level; amix otherwise divides
   // every input's gain by the number of inputs and quietens the original audio.
-  const mixArgs = mp4HasAudio(videoBytes)
+  const mixArgs = info.hasAudio
     ? [
         "-i", "source.mp4", "-i", "music.wav",
         "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first:normalize=0[aout]",
