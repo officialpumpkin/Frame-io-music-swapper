@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { exportWithMusic, exportFileName, downloadBlob } from "./exportMix.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -314,6 +315,15 @@ const CSS = `
 .ml3-rm { background:none; border:none; color:#353550; cursor:pointer; font-size:14px; padding:2px 4px; border-radius:4px; line-height:1; transition:color .1s; flex-shrink:0; }
 .ml3-rm:hover { color:#ef4444; }
 
+/* Export */
+.ml3-export-zone { padding:9px; border-top:1px solid #1E1E2C; flex-shrink:0; }
+.ml3-btn-green { background:#10B98118; border-color:#10B98155; color:#10B981; width:100%; text-align:center; }
+.ml3-btn-green:hover:not(:disabled) { background:#10B98128; }
+.ml3-btn-green:disabled { opacity:.35; cursor:default; }
+.ml3-prog { height:3px; background:#1E1E2C; border-radius:2px; overflow:hidden; margin-top:7px; }
+.ml3-prog-bar { height:100%; background:#10B981; transition:width .2s; }
+.ml3-export-note { font-size:9px; color:#606078; margin-top:6px; line-height:1.6; }
+
 .ml3-divider { font-size:9px; color:#4A4A65; text-transform:uppercase; letter-spacing:.1em; padding:8px 10px 3px; font-weight:600; }
 .ml3-empty { padding:20px 12px; text-align:center; font-size:11px; color:#4A4A65; line-height:1.8; }
 .ml3 ::-webkit-scrollbar { width:3px; }
@@ -357,6 +367,10 @@ export default function MusicLayerV3() {
   const [tracks, setTracks]         = useState([]);
   const [activeTrackId, setActiveTrackId] = useState(null);
   const [dragOver, setDragOver]     = useState(false);
+
+  // ── Export
+  const [exportState, setExportState] = useState(null); // { phase, progress }
+  const [exportErr, setExportErr]     = useState("");
 
   // ── Refs
   const videoRef     = useRef(null);
@@ -688,6 +702,29 @@ export default function MusicLayerV3() {
     }
   }, [selectTrack, seekTo]);
 
+  // ── Export the cut with the music arrangement mixed in
+  const handleExport = useCallback(async () => {
+    if (!currentAsset?.url || !tracks.length || exportState) return;
+    setExportErr("");
+    setPlaying(false);
+    videoRef.current?.pause();
+    audioRef.current?.pause();
+    try {
+      const blob = await exportWithMusic({
+        videoUrl:      currentAsset.url,
+        tracks,
+        activeTrackId,
+        volume:        vol,
+        durationSec:   dur || videoRef.current?.duration,
+        onPhase:       setExportState,
+      });
+      downloadBlob(blob, exportFileName(currentAsset.name));
+    } catch (e) {
+      setExportErr(e.message);
+    }
+    setExportState(null);
+  }, [currentAsset, tracks, activeTrackId, vol, dur, exportState]);
+
   // ── Derived
   const pbAnim = useMemo(() => [
     { height:"60%", animation: playing ? "ml3-b0 .28s ease infinite alternate" : "none" },
@@ -969,6 +1006,46 @@ export default function MusicLayerV3() {
                       })}
                     </>
                 }
+            </div>
+
+            {/* ── Export ── */}
+            <div className="ml3-export-zone">
+              <button
+                className="ml3-btn ml3-btn-green"
+                onClick={handleExport}
+                disabled={!currentAsset || tracks.length === 0 || !!exportState}
+                title={
+                  !currentAsset  ? "Load a Frame.io video first"
+                  : !tracks.length ? "Add at least one music track"
+                  : "Export an MP4 with the music mixed under the original audio"
+                }
+              >
+                {exportState
+                  ? `${exportState.phase}…`
+                  : "↓ Export MP4 with music"}
+              </button>
+
+              {exportState && (
+                <div className="ml3-prog">
+                  <div
+                    className="ml3-prog-bar"
+                    style={{ width: `${Math.round((exportState.progress || 0) * 100)}%` }}
+                  />
+                </div>
+              )}
+
+              {exportErr && (
+                <div className="ml3-status ml3-status-err" style={{ display:"block", marginTop:7 }}>
+                  {exportErr}
+                </div>
+              )}
+
+              {!exportState && !exportErr && currentAsset && tracks.length > 0 && (
+                <div className="ml3-export-note">
+                  Video is copied, not re-encoded — same resolution and quality.
+                  Music is mixed under the original audio.
+                </div>
+              )}
             </div>
           </div>
         </div>
