@@ -2,24 +2,15 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PREMIERE_COLORS = [
-  { id: "red",    hex: "#EF4444", prCode: 0, label: "Red"    },
-  { id: "orange", hex: "#F97316", prCode: 1, label: "Orange" },
-  { id: "yellow", hex: "#EAB308", prCode: 2, label: "Yellow" },
-  { id: "green",  hex: "#10B981", prCode: 3, label: "Green"  },
-  { id: "teal",   hex: "#14B8A6", prCode: 4, label: "Teal"   },
-  { id: "blue",   hex: "#3B82F6", prCode: 5, label: "Blue"   },
-  { id: "purple", hex: "#8B5CF6", prCode: 6, label: "Purple" },
-  { id: "pink",   hex: "#EC4899", prCode: 7, label: "Pink"   },
-];
-
 const TRACK_PALETTE = [
   "#F59E0B","#EF4444","#10B981","#6366F1",
   "#EC4899","#14B8A6","#F97316","#A78BFA",
   "#FB923C","#34D399","#60A5FA","#F472B6",
 ];
 
-const FPS_OPTIONS = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60];
+// Frame rate used purely to render the frames field of the timecode readout.
+// The selector that used to drive this lived in the marker export panel.
+const DISPLAY_FPS = 25;
 
 // ─── Frame.io API Layer ───────────────────────────────────────────────────────
 
@@ -58,9 +49,6 @@ const FIO = {
   asset:       (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/files/${id}?${MEDIA_INCLUDE}`).then(unwrap),
   children:    (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/files/${id}/children?type=file&page=1&page_size=40&${MEDIA_INCLUDE}`).then(unwrap),
   reviewLink:  (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/review_links/${id}`).then(unwrap),
-  getComments: (t, acct, assetId)               => apiRequest(t, "GET",  `/accounts/${acct}/files/${assetId}/comments`).then(unwrap),
-  postComment: (t, acct, assetId, text, timestamp) =>
-    apiRequest(t, "POST", `/accounts/${acct}/files/${assetId}/comments`, { text, timestamp }),
 };
 
 // Parse any Frame.io URL and return { type, id }
@@ -229,61 +217,6 @@ function WaveformSVG({ waveform, progress, color, height = 56, dimmed = false })
 }
 
 function uid() { return Math.random().toString(36).slice(2,10); }
-function esc(s) {
-  return String(s||"")
-    .replace(/&/g,"&amp;").replace(/</g,"&lt;")
-    .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-}
-
-// ─── Premiere FCP7 XML ────────────────────────────────────────────────────────
-
-function buildXML(markers, projectName, fps) {
-  const tb = Math.round(fps);
-  const rows = [...markers].sort((a,b) => a.time - b.time).map(m => {
-    const frame  = Math.round(m.time * fps);
-    const color  = PREMIERE_COLORS.find(c => c.id === m.colorId) || PREMIERE_COLORS[0];
-    const track  = m.trackName ? `Track: "${esc(m.trackName)}"` : "No track";
-    const note   = m.note ? ` — ${esc(m.note)}` : "";
-    const comment = `${track}${note}`;
-    return `      <marker>
-        <name>${esc(m.label || "Marker")}</name>
-        <comment>${comment}</comment>
-        <in>${frame}</in>
-        <out>-1</out>
-        <color>${color.prCode}</color>
-      </marker>`;
-  }).join("\n");
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE xmeml>
-<xmeml version="4">
-  <sequence>
-    <name>${esc(projectName || "Client Markers")}</name>
-    <rate><timebase>${tb}</timebase><ntsc>FALSE</ntsc></rate>
-    <timecode>
-      <rate><timebase>${tb}</timebase><ntsc>FALSE</ntsc></rate>
-      <string>00:00:00:00</string><frame>0</frame>
-      <displayformat>NDF</displayformat>
-    </timecode>
-    <media>
-      <video><format><samplecharacteristics>
-        <width>1920</width><height>1080</height>
-      </samplecharacteristics></format></video>
-    </media>
-    <markers>
-${rows}
-    </markers>
-  </sequence>
-</xmeml>`;
-}
-
-function downloadXML(xml, name) {
-  const blob = new Blob([xml], { type: "application/xml" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  a.click();
-}
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
@@ -308,9 +241,6 @@ const CSS = `
 .ml3-btn-amber { background:#F59E0B18; border-color:#F59E0B55; color:#F59E0B; }
 .ml3-btn-amber:hover { background:#F59E0B28; }
 .ml3-btn-amber:disabled { opacity:.35; cursor:default; }
-.ml3-btn-green { background:#10B98118; border-color:#10B98155; color:#10B981; }
-.ml3-btn-green:hover { background:#10B98128; }
-.ml3-btn-green:disabled { opacity:.35; cursor:default; }
 .ml3-btn-ghost { background:transparent; border-color:#252535; color:#707090; }
 .ml3-btn-ghost:hover { border-color:#353550; color:#A0A0BC; }
 .ml3-status { font-size:10px; padding:3px 8px; border-radius:4px; font-weight:500; }
@@ -341,9 +271,6 @@ const CSS = `
 .ml3-wavestack { position:relative; flex-shrink:0; border-bottom:1px solid #1E1E2C; }
 .ml3-wstack-hint { font-size:9px; color:#4A4A65; text-transform:uppercase; letter-spacing:.1em; padding:6px 13px 3px; }
 
-/* Marker strip */
-.ml3-marker-row { height:18px; position:relative; background:#0A0A12; cursor:crosshair; overflow:visible; border-bottom:1px solid #16161F; }
-
 /* Track waveform rows */
 .ml3-wrow { position:relative; padding:0 13px; cursor:pointer; transition:background .12s; border-bottom:1px solid #13131C; overflow:hidden; user-select:none; }
 .ml3-wrow:hover { background:#111119; }
@@ -356,26 +283,6 @@ const CSS = `
 .ml3-wrow.active .ml3-wrow-name { color:#B0B0CC; }
 .ml3-wrow-analysing { font-size:8.5px; color:#4A4A65; letter-spacing:.08em; text-transform:uppercase; }
 
-/* Marker lines */
-.ml3-wmarker-line { position:absolute; top:0; bottom:0; width:1px; opacity:.5; pointer-events:none; z-index:3; transform:translateX(-50%); }
-
-/* Delete confirmation banner */
-.ml3-delete-confirm { position:absolute; top:4px; left:50%; transform:translateX(-50%); background:#16161F; border:1px solid #EF444455; border-radius:8px; padding:8px 12px; display:flex; align-items:center; gap:10px; z-index:50; white-space:nowrap; box-shadow:0 4px 20px rgba(0,0,0,.6); }
-.ml3-dc-text { font-size:11px; color:#DCDCEE; }
-.ml3-dc-remove { background:#EF444420; border:1px solid #EF444455; color:#EF4444; border-radius:5px; padding:3px 10px; font-size:11px; cursor:pointer; font-weight:500; transition:all .1s; }
-.ml3-dc-remove:hover { background:#EF444435; }
-.ml3-dc-cancel { background:none; border:1px solid #252535; color:#9090A8; border-radius:5px; padding:3px 10px; font-size:11px; cursor:pointer; transition:all .1s; }
-.ml3-dc-cancel:hover { color:#DCDCEE; border-color:#353550; }
-.ml3-dc-suppress { display:flex; align-items:center; gap:5px; font-size:10px; color:#6E6E88; cursor:pointer; border-left:1px solid #252535; padding-left:10px; }
-.ml3-dc-suppress input { cursor:pointer; accent-color:#F59E0B; }
-
-/* Marker flags */
-.ml3-mflag { position:absolute; top:0; bottom:0; width:2px; transform:translateX(-50%); display:flex; flex-direction:column; align-items:center; cursor:pointer; z-index:5; }
-.ml3-mflag:hover .ml3-mtip { opacity:1; }
-.ml3-mflag-diamond { width:7px; height:7px; transform:rotate(45deg) translateX(-2.5px); border-radius:1px; margin-top:2px; flex-shrink:0; }
-.ml3-mflag-line { width:1.5px; flex:1; border-radius:1px; opacity:.5; }
-.ml3-mtip { position:absolute; top:22px; background:#16161F; border:1px solid #2A2A3C; border-radius:5px; padding:4px 8px; white-space:nowrap; font-size:9.5px; color:#A0A0BC; opacity:0; transition:opacity .1s; z-index:30; pointer-events:none; max-width:180px; overflow:hidden; text-overflow:ellipsis; }
-
 /* Transport */
 .ml3-transport { padding:9px 13px; border-bottom:1px solid #1E1E2C; display:flex; align-items:center; gap:7px; flex-shrink:0; }
 .ml3-play-btn { background:#F59E0B; border:none; color:#0C0C13; border-radius:7px; padding:7px 16px; cursor:pointer; font-weight:700; font-size:12px; letter-spacing:.04em; transition:all .1s; white-space:nowrap; }
@@ -383,17 +290,13 @@ const CSS = `
 .ml3-play-btn:active { transform:scale(.97); }
 .ml3-stop-btn { background:none; border:1px solid #22222F; color:#707090; border-radius:5px; padding:4px 9px; cursor:pointer; font-size:11px; transition:all .1s; }
 .ml3-stop-btn:hover { border-color:#353550; color:#A0A0BC; }
-.ml3-mark-btn { background:none; border:1px solid #22222F; color:#9090A8; border-radius:5px; padding:4px 11px; cursor:pointer; font-size:11px; font-weight:500; transition:all .1s; letter-spacing:.02em; }
-.ml3-mark-btn:hover { border-color:#F59E0B55; color:#F59E0B; }
-.ml3-mark-btn:disabled { opacity:.3; cursor:default; }
 .ml3-vol { display:flex; align-items:center; gap:6px; margin-left:auto; }
 .ml3-vol input[type=range] { width:64px; cursor:pointer; }
 
 /* Right panel */
 .ml3-right { display:flex; flex-direction:column; overflow:hidden; }
-.ml3-tabs { display:flex; border-bottom:1px solid #1E1E2C; flex-shrink:0; }
-.ml3-tab { flex:1; padding:9px 6px; text-align:center; font-size:9.5px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; cursor:pointer; color:#606078; border:none; background:none; border-bottom:2px solid transparent; transition:color .1s; }
-.ml3-tab.on { color:#F59E0B; border-bottom-color:#F59E0B; }
+.ml3-panel-head { display:flex; border-bottom:1px solid #1E1E2C; flex-shrink:0; }
+.ml3-panel-title { flex:1; padding:9px 6px; text-align:center; font-size:9.5px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:#F59E0B; border-bottom:2px solid #F59E0B; }
 .ml3-tab-body { flex:1; overflow-y:auto; }
 
 /* Tracks */
@@ -410,27 +313,6 @@ const CSS = `
 .ml3-pbar { width:2px; border-radius:1px; }
 .ml3-rm { background:none; border:none; color:#353550; cursor:pointer; font-size:14px; padding:2px 4px; border-radius:4px; line-height:1; transition:color .1s; flex-shrink:0; }
 .ml3-rm:hover { color:#ef4444; }
-
-/* Markers */
-.ml3-mitem { padding:8px 10px; margin:3px 7px; border-radius:7px; border:1px solid #1E1E2C; background:#10101A; transition:border-color .1s; }
-.ml3-mitem:hover { border-color:#2A2A3C; }
-.ml3-mitem.on { border-color:var(--mc); background:rgba(var(--mc-rgb),.06); }
-.ml3-mhead { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
-.ml3-mlabel { background:transparent; border:none; color:#DCDCEE; font-size:12px; font-weight:500; outline:none; flex:1; min-width:0; font-family:'Inter',sans-serif; }
-.ml3-mlabel::placeholder { color:#454560; }
-.ml3-mnote { background:#0C0C13; border:1px solid #1E1E2C; color:#9090A8; border-radius:4px; padding:4px 7px; font-size:10.5px; width:100%; outline:none; resize:none; font-family:'Inter',sans-serif; line-height:1.5; }
-.ml3-mnote:focus { border-color:#2A2A3C; color:#DCDCEE; }
-.ml3-cpick { display:flex; gap:3px; align-items:center; margin-top:4px; }
-.ml3-cdot { width:11px; height:11px; border-radius:2px; cursor:pointer; transition:transform .1s; }
-.ml3-cdot:hover, .ml3-cdot.on { transform:scale(1.35); outline:1.5px solid rgba(255,255,255,.3); outline-offset:1px; }
-.ml3-track-chip { display:inline-flex; align-items:center; gap:4px; font-size:9px; border-radius:3px; padding:2px 5px; font-weight:500; max-width:120px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; flex-shrink:0; }
-.ml3-seek-btn { background:none; border:1px solid #1E1E2C; color:#6E6E88; border-radius:4px; padding:2px 6px; font-size:9px; cursor:pointer; font-family:'IBM Plex Mono',monospace; transition:all .1s; }
-.ml3-seek-btn:hover { border-color:#2A2A3C; color:#A0A0BC; }
-.ml3-fio-badge { font-size:9px; color:#F59E0B; background:#F59E0B18; border:1px solid #F59E0B35; border-radius:3px; padding:1px 5px; flex-shrink:0; }
-.ml3-export-zone { padding:8px 9px; border-top:1px solid #1E1E2C; flex-shrink:0; }
-.ml3-fps-sel { background:#13131C; border:1px solid #1E1E2C; color:#9090A8; border-radius:4px; padding:3px 6px; font-size:10px; cursor:pointer; outline:none; }
-.ml3-proj-inp { background:#13131C; border:1px solid #1E1E2C; color:#9090A8; border-radius:5px; padding:5px 8px; font-size:11px; flex:1; outline:none; }
-.ml3-proj-inp:focus { border-color:#F59E0B55; color:#DCDCEE; }
 
 .ml3-divider { font-size:9px; color:#4A4A65; text-transform:uppercase; letter-spacing:.1em; padding:8px 10px 3px; font-weight:600; }
 .ml3-empty { padding:20px 12px; text-align:center; font-size:11px; color:#4A4A65; line-height:1.8; }
@@ -476,24 +358,6 @@ export default function MusicLayerV3() {
   const [activeTrackId, setActiveTrackId] = useState(null);
   const [dragOver, setDragOver]     = useState(false);
 
-  // ── Markers
-  const [markers, setMarkers]           = useState([]);
-  const [selectedMId, setSelectedMId]   = useState(null);
-  const [newMarkerColor, setNewMarkerColor] = useState("red");
-  const [projectName, setProjectName]   = useState("Client Review");
-  const [exportFPS, setExportFPS]       = useState(25);
-
-  // ── Frame.io comment sync
-  const [syncing, setSyncing] = useState(false);
-  const [syncMsg, setSyncMsg] = useState("");
-
-  // ── Marker delete confirmation
-  const [deleteConfirm, setDeleteConfirm]                 = useState(null);
-  const [suppressDeleteWarning, setSuppressDeleteWarning] = useState(false);
-
-  // ── UI
-  const [tab, setTab] = useState("tracks");
-
   // ── Refs
   const videoRef     = useRef(null);
   const audioRef     = useRef(null);
@@ -501,7 +365,6 @@ export default function MusicLayerV3() {
   const startRef     = useRef(0);
   const posRef       = useRef(0);
   const waveStackRef = useRef(null);
-  const markerRowRef = useRef(null);
 
   // Mirror refs
   const tracksRef        = useRef(tracks);
@@ -574,7 +437,6 @@ export default function MusicLayerV3() {
         const url = videoURL(result.asset);
         if (!url) throw new Error("No playable URL found for this asset.");
         setCurrentAsset({ id: result.asset.id, name: result.asset.name, url });
-        if (!projectName || projectName === "Client Review") setProjectName(result.asset.name);
       } else {
         setFolderName(result.folderName);
         setFolderAssets(result.assets.map(a => ({
@@ -587,13 +449,12 @@ export default function MusicLayerV3() {
       setResolveErr(e.message);
     }
     setResolving(false);
-  }, [urlInput, token, accountId, projectName]);
+  }, [urlInput, token, accountId]);
 
   const selectFolderAsset = useCallback((a) => {
     setCurrentAsset(a);
     setFolderAssets(null);
-    if (!projectName || projectName === "Client Review") setProjectName(a.name);
-  }, [projectName]);
+  }, []);
 
   // ── Video events
   useEffect(() => {
@@ -713,59 +574,15 @@ export default function MusicLayerV3() {
     }
   }, []);
 
-  // ── Add marker at playhead
-  const addMarkerAtPlayhead = useCallback(() => {
-    if (!activeTrack) return;
-    const trackDur = activeTrack.audioDuration || dur || 1;
-    const fraction = trackDur > 0 ? pos / trackDur : 0;
-    const id = uid();
-    setMarkers(prev => [...prev, {
-      id,
-      time:       pos,
-      fraction,
-      colorId:    newMarkerColor,
-      label:      "",
-      note:       "",
-      trackId:    activeTrack.id,
-      trackName:  activeTrack.name,
-      trackColor: activeTrack.color,
-      fioCommentId: null,
-    }]);
-    setSelectedMId(id);
-    setTab("markers");
-  }, [pos, dur, activeTrack, newMarkerColor]);
-
   // ── Keyboard shortcuts
   useEffect(() => {
     const onKey = (e) => {
       const inField = e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA";
       if (e.code === "Space" && !inField) { e.preventDefault(); handlePlay(); }
-      if (e.code === "KeyM"  && !inField) { e.preventDefault(); addMarkerAtPlayhead(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handlePlay, addMarkerAtPlayhead]);
-
-  // ── Add marker via marker strip click
-  const handleMarkerRow = useCallback((e) => {
-    const rect = markerRowRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const time     = fraction * (effectiveDur || 0);
-    const id       = uid();
-    const at       = activeTrack;
-    setMarkers(prev => [...prev, {
-      id, time, fraction,
-      colorId:    newMarkerColor,
-      label:      "", note: "",
-      trackId:    at?.id    || null,
-      trackName:  at?.name  || null,
-      trackColor: at?.color || null,
-      fioCommentId: null,
-    }]);
-    setSelectedMId(id);
-    setTab("markers");
-  }, [effectiveDur, newMarkerColor, activeTrack]);
+  }, [handlePlay]);
 
   // ── Track file handling
   const handleFiles = useCallback((files) => {
@@ -871,77 +688,13 @@ export default function MusicLayerV3() {
     }
   }, [selectTrack, seekTo]);
 
-  // ── Marker updates
-  const updateMarker = (id, f, v) => setMarkers(prev => prev.map(m => m.id === id ? { ...m, [f]: v } : m));
-  const removeMarker = (id) => { setMarkers(prev => prev.filter(m => m.id !== id)); setSelectedMId(null); };
-
-  // ── Frame.io comment sync
-  const syncToFrameio = useCallback(async () => {
-    if (!token || !currentAsset?.id || !accountId) return;
-    setSyncing(true); setSyncMsg("");
-    try {
-      const unsynced = markers.filter(m => !m.fioCommentId);
-      for (const m of unsynced) {
-        const trackLine = m.trackName ? `🎵 Track: "${m.trackName}"` : "🎵 No track selected";
-        const labelLine = m.label ? `\n${m.label}` : "";
-        const noteLine  = m.note  ? `\n${m.note}`  : "";
-        const text = `${trackLine}${labelLine}${noteLine}\n\n— via Music Layer`;
-        const res = await FIO.postComment(token, accountId, currentAsset.id, text, Math.round(m.time));
-        setMarkers(prev => prev.map(x => x.id === m.id ? { ...x, fioCommentId: res.id } : x));
-      }
-      setSyncMsg(`${unsynced.length} comment${unsynced.length !== 1 ? "s" : ""} posted to Frame.io`);
-    } catch (e) {
-      setSyncMsg(`Error: ${e.message}`);
-    }
-    setSyncing(false);
-  }, [token, accountId, currentAsset, markers]);
-
-  const loadFromFrameio = useCallback(async () => {
-    if (!token || !currentAsset?.id || !accountId) return;
-    setSyncing(true); setSyncMsg("");
-    try {
-      const comments = await FIO.getComments(token, accountId, currentAsset.id);
-      const list     = Array.isArray(comments) ? comments : (comments.data || []);
-      const imported = list
-        .filter(c => typeof c.timestamp === "number")
-        .map(c => ({
-          id: uid(), time: c.timestamp,
-          colorId: "blue", label: c.author?.name || "Frame.io",
-          note: c.text?.replace(/— via Music Layer$/, "").trim() || "",
-          trackId: null, trackName: null, trackColor: null,
-          fioCommentId: c.id,
-        }));
-      setMarkers(prev => {
-        const existingFioIds = new Set(prev.map(m => m.fioCommentId).filter(Boolean));
-        const newOnes = imported.filter(m => !existingFioIds.has(m.fioCommentId));
-        return [...prev, ...newOnes];
-      });
-      setSyncMsg(`${imported.length} comment${imported.length !== 1 ? "s" : ""} loaded from Frame.io`);
-    } catch (e) {
-      setSyncMsg(`Error: ${e.message}`);
-    }
-    setSyncing(false);
-  }, [token, accountId, currentAsset, markers]);
-
-  // ── XML export
-  const handleExport = useCallback(() => {
-    if (!markers.length) return;
-    const xml  = buildXML(markers, projectName, exportFPS);
-    const slug = projectName.replace(/\s+/g,"_").replace(/[^a-z0-9_-]/gi,"");
-    downloadXML(xml, `${slug}_markers.xml`);
-  }, [markers, projectName, exportFPS]);
-
   // ── Derived
-  const pct = effectiveDur ? (pos / effectiveDur) * 100 : 0;
-
   const pbAnim = useMemo(() => [
     { height:"60%", animation: playing ? "ml3-b0 .28s ease infinite alternate" : "none" },
     { height:"30%", animation: playing ? "ml3-b1 .42s ease infinite alternate" : "none" },
     { height:"80%", animation: playing ? "ml3-b2 .35s ease infinite alternate" : "none" },
     { height:"45%", animation: playing ? "ml3-b3 .5s ease infinite alternate"  : "none" },
   ], [playing]);
-
-  const unsyncedCount = markers.filter(m => !m.fioCommentId).length;
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
@@ -1072,7 +825,7 @@ export default function MusicLayerV3() {
                 </div>
               )}
 
-              <div className="ml3-tc mono">{fmt(pos, exportFPS)}</div>
+              <div className="ml3-tc mono">{fmt(pos, DISPLAY_FPS)}</div>
               {activeTrack && (
                 <div className="ml3-vid-overlay">
                   <div style={{ width:5, height:5, borderRadius:"50%", background:activeTrack.color, flexShrink:0 }} />
@@ -1091,42 +844,8 @@ export default function MusicLayerV3() {
             <div className="ml3-wavestack" ref={waveStackRef}>
 
               <div className="ml3-wstack-hint">
-                Click to seek · Shift+click waveform to add marker · Shift+click marker to remove · Space = play · M = mark
+                Click to seek · Space = play
               </div>
-
-              {/* Marker strip */}
-              <div className="ml3-marker-row" ref={markerRowRef} onClick={handleMarkerRow}>
-                {markers.map(m => {
-                  const c = PREMIERE_COLORS.find(x => x.id === m.colorId) || PREMIERE_COLORS[0];
-                  return (
-                    <div
-                      key={m.id}
-                      className="ml3-mflag"
-                      style={{ left: `${(m.fraction ?? 0) * 100}%` }}
-                      onClick={e => { e.stopPropagation(); setSelectedMId(m.id); setTab("markers"); seekTo(m.time); }}
-                    >
-                      <div className="ml3-mflag-diamond" style={{ background: c.hex }} />
-                      <div className="ml3-mflag-line"    style={{ background: c.hex }} />
-                      {(m.label || m.trackName) && (
-                        <div className="ml3-mtip">{m.label || m.trackName}</div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Delete confirmation banner */}
-              {deleteConfirm && (
-                <div className="ml3-delete-confirm">
-                  <span className="ml3-dc-text">Remove "{deleteConfirm.label || "marker"}"?</span>
-                  <button className="ml3-dc-remove" onClick={() => { removeMarker(deleteConfirm.id); setDeleteConfirm(null); }}>Remove</button>
-                  <button className="ml3-dc-cancel" onClick={() => setDeleteConfirm(null)}>Cancel</button>
-                  <label className="ml3-dc-suppress">
-                    <input type="checkbox" onChange={e => setSuppressDeleteWarning(e.target.checked)} />
-                    Don't ask again
-                  </label>
-                </div>
-              )}
 
               {/* Track waveform rows */}
               {tracks.length === 0 ? (
@@ -1135,46 +854,13 @@ export default function MusicLayerV3() {
                 tracks.map(t => {
                   const isActive = t.id === activeTrackId;
                   const rowH     = isActive ? 68 : 50;
-                  const PAD      = 13;
 
                   return (
                     <div
                       key={t.id}
                       className={`ml3-wrow${isActive ? " active" : ""}`}
                       style={{ height: rowH }}
-                      onClick={e => {
-                        if (e.shiftKey) {
-                          const rect     = e.currentTarget.getBoundingClientRect();
-                          const fraction = Math.max(0, Math.min(1,
-                            (e.clientX - rect.left - PAD) / (rect.width - PAD * 2)
-                          ));
-                          const SNAP = 0.015;
-                          const near = markers.find(m => Math.abs((m.fraction ?? 0) - fraction) < SNAP);
-                          if (near) {
-                            if (suppressDeleteWarning) {
-                              removeMarker(near.id);
-                            } else {
-                              setDeleteConfirm(near);
-                            }
-                            return;
-                          }
-                          const time = fraction * (t.audioDuration || dur || 0);
-                          const id   = uid();
-                          setMarkers(prev => [...prev, {
-                            id, time, fraction,
-                            colorId:    newMarkerColor,
-                            label:      "", note: "",
-                            trackId:    t.id,
-                            trackName:  t.name,
-                            trackColor: t.color,
-                            fioCommentId: null,
-                          }]);
-                          setSelectedMId(id);
-                          setTab("markers");
-                        } else {
-                          handleWaveformClick(e, t.id);
-                        }
-                      }}
+                      onClick={e => handleWaveformClick(e, t.id)}
                     >
                       <div className="ml3-wrow-label">
                         <div style={{ width:5, height:5, borderRadius:"50%", background:t.color, flexShrink:0 }} />
@@ -1189,21 +875,6 @@ export default function MusicLayerV3() {
                         height={rowH}
                         dimmed={!isActive}
                       />
-
-                      {markers.filter(m => m.trackId === t.id).map(m => {
-                        const c = PREMIERE_COLORS.find(x => x.id === m.colorId) || PREMIERE_COLORS[0];
-                        const f = m.fraction ?? 0;
-                        return (
-                          <div
-                            key={m.id}
-                            className="ml3-wmarker-line"
-                            style={{
-                              left: `calc(${PAD}px + ${f} * (100% - ${PAD * 2}px))`,
-                              background: c.hex,
-                            }}
-                          />
-                        );
-                      })}
                     </div>
                   );
                 })
@@ -1216,15 +887,7 @@ export default function MusicLayerV3() {
               <button className="ml3-play-btn" onClick={handlePlay}>
                 {playing ? "⏸  Pause" : "▶  Play"}
               </button>
-              <button
-                className="ml3-mark-btn"
-                onClick={addMarkerAtPlayhead}
-                disabled={!activeTrack}
-                title="Add marker at playhead (M)"
-              >
-                ◆ Mark
-              </button>
-              <span className="mono" style={{ fontSize:10, color:"#606078" }}>{fmt(pos,exportFPS)} / {fmt(effectiveDur,exportFPS)}</span>
+              <span className="mono" style={{ fontSize:10, color:"#606078" }}>{fmt(pos,DISPLAY_FPS)} / {fmt(effectiveDur,DISPLAY_FPS)}</span>
               <div className="ml3-vol">
                 <span style={{ fontSize:9, color:"#606078", textTransform:"uppercase", letterSpacing:".08em" }}>Music</span>
                 <input type="range" min="0" max="1" step="0.01" value={vol}
@@ -1239,18 +902,13 @@ export default function MusicLayerV3() {
 
           {/* ── Right panel ── */}
           <div className="ml3-right">
-            <div className="ml3-tabs">
-              <button className={`ml3-tab${tab==="tracks" ? " on" : ""}`} onClick={() => setTab("tracks")}>
+            <div className="ml3-panel-head">
+              <div className="ml3-panel-title">
                 Tracks{tracks.length ? ` (${tracks.length})` : ""}
-              </button>
-              <button className={`ml3-tab${tab==="markers" ? " on" : ""}`} onClick={() => setTab("markers")}>
-                Markers{markers.length ? ` (${markers.length})` : ""}
-              </button>
+              </div>
             </div>
 
-            {/* ── Tracks tab ── */}
-            {tab === "tracks" && (
-              <div className="ml3-tab-body">
+            <div className="ml3-tab-body">
                 <div
                   className={`ml3-drop${dragOver ? " over" : ""}`}
                   onDragOver={e => { e.preventDefault(); setDragOver(true); }}
@@ -1280,7 +938,7 @@ export default function MusicLayerV3() {
                               </div>
                               <div style={{ flex:1, minWidth:0 }}>
                                 <div style={{ fontSize:11.5, fontWeight:500, color:isOn?"#DCDCEE":"#707090", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{t.name}</div>
-                                <div style={{ fontSize:9.5, color:"#606078" }}>{t.size}{t.audioDuration ? ` · ${fmt(t.audioDuration, exportFPS)}` : ""}</div>
+                                <div style={{ fontSize:9.5, color:"#606078" }}>{t.size}{t.audioDuration ? ` · ${fmt(t.audioDuration, DISPLAY_FPS)}` : ""}</div>
                               </div>
                               {isOn && playing && (
                                 <div className="ml3-pbars">
@@ -1311,120 +969,7 @@ export default function MusicLayerV3() {
                       })}
                     </>
                 }
-              </div>
-            )}
-
-            {/* ── Markers tab ── */}
-            {tab === "markers" && (
-              <div className="ml3-tab-body" style={{ display:"flex", flexDirection:"column" }}>
-                <div style={{ padding:"8px 10px", borderBottom:"1px solid #131325" }}>
-                  <div style={{ fontSize:9, color:"#606078", textTransform:"uppercase", letterSpacing:".1em", marginBottom:5 }}>New marker colour</div>
-                  <div className="ml3-cpick">
-                    {PREMIERE_COLORS.map(c => (
-                      <div key={c.id} className={`ml3-cdot${newMarkerColor===c.id?" on":""}`}
-                        style={{ background:c.hex }} title={c.label}
-                        onClick={() => setNewMarkerColor(c.id)} />
-                    ))}
-                    <span style={{ fontSize:9, color:"#606078", marginLeft:"auto" }}>Click timeline row to place</span>
-                  </div>
-                </div>
-
-                <div style={{ flex:1, padding:"6px 0" }}>
-                  {markers.length === 0
-                    ? <div className="ml3-empty">No markers yet.<br/>Click the dashed row above the scrubber to add one.</div>
-                    : [...markers].sort((a,b) => a.time - b.time).map(m => {
-                        const c   = PREMIERE_COLORS.find(x => x.id === m.colorId) || PREMIERE_COLORS[0];
-                        const isOn = m.id === selectedMId;
-                        return (
-                          <div key={m.id} className={`ml3-mitem${isOn ? " on" : ""}`}
-                            style={{ "--mc": c.hex, "--mc-rgb": c.hex.slice(1).match(/../g)?.map(x=>parseInt(x,16)).join(",") || "0,0,0" }}
-                            onClick={() => setSelectedMId(isOn ? null : m.id)}
-                          >
-                            <div className="ml3-mhead">
-                              <div style={{ width:8, height:8, borderRadius:2, background:c.hex, flexShrink:0, transform:"rotate(45deg)" }} />
-                              <span className="ml3-seek-btn mono" onClick={e => { e.stopPropagation(); seekTo(m.time); }}>{fmt(m.time, exportFPS)}</span>
-                              <input className="ml3-mlabel" placeholder="Label…"
-                                value={m.label}
-                                onChange={e => updateMarker(m.id, "label", e.target.value)}
-                                onClick={e => { e.stopPropagation(); setSelectedMId(m.id); }}
-                              />
-                              {m.fioCommentId && <span className="ml3-fio-badge">Frame.io</span>}
-                              <button className="ml3-rm" style={{ fontSize:13 }} onClick={e => { e.stopPropagation(); removeMarker(m.id); }}>×</button>
-                            </div>
-
-                            {m.trackName && (
-                              <div style={{ marginBottom:4 }}>
-                                <span className="ml3-track-chip" style={{ background:`${m.trackColor || "#888"}18`, color: m.trackColor || "#888", border:`1px solid ${m.trackColor || "#888"}30` }}>
-                                  <span style={{ fontSize:8 }}>♪</span> {m.trackName}
-                                </span>
-                              </div>
-                            )}
-
-                            {isOn && (
-                              <>
-                                <textarea className="ml3-mnote" rows={2}
-                                  placeholder="Note for the editor…"
-                                  value={m.note}
-                                  onChange={e => updateMarker(m.id, "note", e.target.value)}
-                                />
-                                <div className="ml3-cpick" style={{ marginTop:5 }}>
-                                  {PREMIERE_COLORS.map(x => (
-                                    <div key={x.id} className={`ml3-cdot${m.colorId===x.id?" on":""}`}
-                                      style={{ background:x.hex }} title={x.label}
-                                      onClick={() => updateMarker(m.id, "colorId", x.id)} />
-                                  ))}
-                                  <span style={{ fontSize:9, color:"#606078", marginLeft:"auto" }}>{c.label}</span>
-                                </div>
-                              </>
-                            )}
-                          </div>
-                        );
-                      })
-                  }
-                </div>
-
-                <div className="ml3-export-zone">
-                  {token && currentAsset && (
-                    <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:8, paddingBottom:8, borderBottom:"1px solid #131325" }}>
-                      <button className="ml3-btn ml3-btn-amber"
-                        style={{ fontSize:10, padding:"4px 9px" }}
-                        onClick={syncToFrameio}
-                        disabled={syncing || unsyncedCount === 0 || !accountId}
-                      >
-                        {syncing ? "Syncing…" : `↑ Post ${unsyncedCount} to Frame.io`}
-                      </button>
-                      <button className="ml3-btn ml3-btn-ghost"
-                        style={{ fontSize:10, padding:"4px 9px" }}
-                        onClick={loadFromFrameio}
-                        disabled={syncing || !accountId}
-                      >↓ Load comments</button>
-                      {syncMsg && <span style={{ fontSize:9, color:"#10B981" }}>{syncMsg}</span>}
-                    </div>
-                  )}
-
-                  <div style={{ display:"flex", gap:6, marginBottom:6 }}>
-                    <input className="ml3-proj-inp" placeholder="Project name…"
-                      value={projectName} onChange={e => setProjectName(e.target.value)} />
-                    <select className="ml3-fps-sel" value={exportFPS}
-                      onChange={e => setExportFPS(Number(e.target.value))}>
-                      {FPS_OPTIONS.map(f => <option key={f} value={f}>{f}</option>)}
-                    </select>
-                  </div>
-                  <button className="ml3-btn ml3-btn-green"
-                    style={{ width:"100%", justifyContent:"center", display:"flex" }}
-                    onClick={handleExport}
-                    disabled={markers.length === 0}
-                  >
-                    ↓ Export Premiere XML ({markers.length} marker{markers.length !== 1 ? "s" : ""})
-                  </button>
-                  {markers.length > 0 && (
-                    <div style={{ fontSize:9, color:"#606078", marginTop:5, lineHeight:1.6 }}>
-                      Each marker includes the track name in the comment field · FCP7 XML · File → Import in Premiere Pro
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+            </div>
           </div>
         </div>
       </div>
