@@ -229,7 +229,13 @@ const CSS = `
   --text:#E8E8F2; --muted:#7A7A94; --dim:#4E4E64;
   --accent:#F59E0B; --green:#10B981; --red:#EF4444;
 
-  position:fixed; inset:0; display:flex; flex-direction:column; overflow:hidden;
+  /* Mobile browsers resolve fixed positioning against the layout viewport, which
+     is the URL-bar-retracted height. Pinning with inset:0 therefore pushed the
+     bottom of the app under the browser chrome in portrait. dvh tracks the
+     viewport that is actually visible; vh is the fallback for old engines. */
+  position:fixed; top:0; left:0; right:0;
+  height:100vh; height:100dvh;
+  display:flex; flex-direction:column; overflow:hidden;
   background:var(--bg); color:var(--text); font-size:13px;
   font-family:'Inter',system-ui,-apple-system,sans-serif;
   -webkit-tap-highlight-color:transparent;
@@ -308,7 +314,7 @@ const CSS = `
 
 /* ── Stage ───────────────────────────────────────────────────────────────── */
 .bms-body { flex:1; min-height:0; display:flex; }
-.bms-main { flex:1; min-width:0; display:flex; flex-direction:column; }
+.bms-main { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; }
 
 .bms-stage {
   position:relative; flex:1; min-height:0; background:#000;
@@ -395,7 +401,10 @@ const CSS = `
 .bms-picker-thumb { width:64px; height:36px; border-radius:5px; background:var(--surface-2); object-fit:cover; flex-shrink:0; }
 
 /* ── Waveform dock ───────────────────────────────────────────────────────── */
-.bms-dock { flex-shrink:0; background:var(--surface); border-top:1px solid var(--line); }
+.bms-dock {
+  flex-shrink:0; background:var(--surface); border-top:1px solid var(--line);
+  padding-bottom:env(safe-area-inset-bottom); /* clear the home indicator */
+}
 .bms-dock-head {
   height:34px; display:flex; align-items:center; gap:9px; padding:0 12px; cursor:pointer;
   background:none; border:none; width:100%; color:inherit;
@@ -404,7 +413,7 @@ const CSS = `
 .bms-dock-hint { font-size:9.5px; color:var(--dim); margin-left:auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .bms-caret { width:13px; height:13px; color:var(--muted); transition:transform .2s; flex-shrink:0; }
 .bms-caret.up { transform:rotate(180deg); }
-.bms-dock-body { max-height:34vh; overflow-y:auto; border-top:1px solid var(--line); }
+.bms-dock-body { max-height:34dvh; overflow-y:auto; border-top:1px solid var(--line); }
 
 .bms-wrow {
   position:relative; padding:0 12px; cursor:pointer; overflow:hidden; user-select:none;
@@ -501,17 +510,21 @@ const CSS = `
   .bms-powered { display:none; }
 
   /* Tracks become a bottom sheet rather than a side panel. */
+  /* Absolute, not fixed: the containing block is then .bms — whose height is
+     100dvh — so the sheet sits on the visible bottom edge rather than on the
+     layout viewport's bottom, which portrait browser chrome pushes off screen. */
   .bms-aside {
-    position:fixed; left:0; right:0; bottom:0; top:auto; width:auto; border-left:none;
+    position:absolute; left:0; right:0; bottom:0; top:auto; width:auto; border-left:none;
     border-top:1px solid var(--line); border-radius:18px 18px 0 0;
     height:min(74dvh, 620px); transform:translateY(101%); transition:transform .26s ease;
     box-shadow:0 -12px 40px rgba(0,0,0,.6);
+    padding-bottom:env(safe-area-inset-bottom);
   }
   .bms-aside.open { width:auto; transform:translateY(0); }
   .bms-aside-inner { width:100%; }
   .bms-grabber { display:block; width:36px; height:4px; border-radius:2px; background:#31314A; margin:9px auto 3px; flex-shrink:0; }
-  .bms-scrim { display:block; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:39; }
-  .bms-dock-body { max-height:30vh; }
+  .bms-scrim { display:block; position:absolute; inset:0; background:rgba(0,0,0,.55); z-index:39; }
+  .bms-dock-body { max-height:30dvh; }
   .bms-dock-hint { display:none; }
 }
 
@@ -533,7 +546,7 @@ const CSS = `
 /* A landscape phone has almost no height to spare, so give it all to the video. */
 @media (max-height:520px) and (orientation:landscape) {
   .bms-top { height:44px; }
-  .bms-dock-body { max-height:26vh; }
+  .bms-dock-body { max-height:26dvh; }
 }
 `;
 
