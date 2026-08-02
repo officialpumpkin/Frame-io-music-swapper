@@ -246,7 +246,7 @@ const CSS = `
   padding-right:max(12px, env(safe-area-inset-right));
   background:var(--surface); border-bottom:1px solid var(--line);
 }
-.bms-brand { display:flex; align-items:center; gap:9px; min-width:0; }
+.bms-brand { display:flex; align-items:center; gap:9px; min-width:0; overflow:hidden; }
 /* Brand artwork ships as black-on-transparent, so it is inverted for the dark UI. */
 .bms-mark { width:21px; height:21px; flex-shrink:0; filter:invert(1); opacity:.94; }
 .bms-wordmark { height:10px; width:auto; filter:invert(1); opacity:.94; }
@@ -513,13 +513,16 @@ const CSS = `
 
 @media (max-width:560px) {
   .bms-top { height:50px; gap:8px; }
-  .bms-wordmark { display:none; }
-  .bms-rule { display:none; }
   /* The loaded video is its own confirmation at this width. */
   .bms-chip-asset { display:none; }
   .bms-title { font-size:10px; letter-spacing:.1em; }
   .bms-vol input[type=range] { display:none; }
   .bms-transport { gap:7px; }
+}
+
+/* The full lockup fits to 360px; below that drop back to the mark alone. */
+@media (max-width:360px) {
+  .bms-wordmark, .bms-rule { display:none; }
 }
 
 /* A landscape phone has almost no height to spare, so give it all to the video. */
