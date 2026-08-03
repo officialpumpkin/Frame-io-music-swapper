@@ -221,6 +221,17 @@ function uid() { return Math.random().toString(36).slice(2,10); }
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(v, hi)); }
 
+// Seeking a media element that hasn't loaded its metadata yet is unreliable —
+// the browser may discard the position and start from zero. Apply it now if the
+// element is ready, and again on loadedmetadata if it isn't.
+function seekAudioEl(a, t) {
+  if (!a) return;
+  const at = Math.max(0, t);
+  const apply = () => { try { a.currentTime = at; } catch { /* not seekable yet */ } };
+  apply();
+  if (a.readyState < 1) a.addEventListener("loadedmetadata", apply, { once: true });
+}
+
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const CSS = `
@@ -540,8 +551,15 @@ const CSS = `
 }
 .bms-srcbtn:hover:not(:disabled) { color:var(--text); border-color:#2C2C3E; }
 .bms-srcbtn:disabled { opacity:.4; cursor:default; }
-.bms-srcbtn.play { width:28px; height:28px; padding:0; display:flex; align-items:center; justify-content:center; color:var(--text); }
-.bms-srcbtn.play svg { width:14px; height:14px; }
+/* Deliberately loud: this is the control people reach for, and an icon-only
+   button here reads as decoration next to the video's own play button. */
+.bms-srcbtn.play {
+  display:flex; align-items:center; gap:6px; padding:6px 11px 6px 9px;
+  background:#F59E0B18; border-color:#F59E0B45; color:var(--accent); font-weight:600;
+}
+.bms-srcbtn.play:hover { background:#F59E0B26; border-color:#F59E0B70; color:var(--accent); }
+.bms-srcbtn.play.on { background:#F59E0B2E; border-color:#F59E0B85; }
+.bms-srcbtn.play svg { width:13px; height:13px; flex-shrink:0; }
 .bms-srcbtn.quiet { background:transparent; border-color:transparent; color:var(--dim); }
 .bms-srcbtn.add { margin-left:auto; background:#10B98118; border-color:#10B98140; color:var(--green); }
 .bms-srcbtn.add:hover:not(:disabled) { background:#10B98126; border-color:#10B98166; }
@@ -852,8 +870,8 @@ export default function MusicLayerV3() {
       const a   = audioRef.current;
       if (cue && a) {
         if (a.src !== cue.url) a.src = cue.url;
-        a.volume      = vol;
-        a.currentTime = Math.max(0, cue.at);
+        a.volume = vol;
+        seekAudioEl(a, cue.at);
         a.play().catch(() => {});
       } else {
         a?.pause();
@@ -910,7 +928,7 @@ export default function MusicLayerV3() {
       a.dataset.clipId = String(cue.clipId);
       a.src            = cue.url;
       a.volume         = volRef.current;
-      a.currentTime    = Math.max(0, cue.at);
+      seekAudioEl(a, cue.at);
       a.play().catch(() => {});
     }
   }, [Math.floor(pos * 4), playing, clips.length, timelineCueAt]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -932,7 +950,7 @@ export default function MusicLayerV3() {
       if (a.src !== cue.url) a.src = cue.url;
       a.dataset.clipId = String(cue.clipId);
       a.volume         = volRef.current;
-      a.currentTime    = Math.max(0, cue.at);
+      seekAudioEl(a, cue.at);
       if (playingRef.current) a.play().catch(() => {});
     }
   }, [timelineCueAt]);
@@ -951,8 +969,8 @@ export default function MusicLayerV3() {
     const a = srcAudioRef.current;
     if (a && track) {
       if (a.src !== track.url) a.src = track.url;
-      a.volume      = volRef.current;
-      a.currentTime = s;
+      a.volume = volRef.current;
+      seekAudioEl(a, s);
     }
   }, []);
 
@@ -971,16 +989,20 @@ export default function MusicLayerV3() {
     }
 
     if (a.src !== track.url) a.src = track.url;
-    a.volume      = volRef.current;
-    a.currentTime = srcPosRef.current;
+    a.volume = volRef.current;
+    seekAudioEl(a, srcPosRef.current);
     a.play().catch(() => {});
     setSrcPlaying(true);
 
     const tick = () => {
       const cur = srcAudioRef.current;
       if (!cur) return;
-      srcPosRef.current = cur.currentTime;
-      setSrcPos(cur.currentTime);
+      // Until the element is actually loaded its currentTime reads 0, which
+      // would drag the playhead back to the start before playback begins.
+      if (cur.readyState >= 1) {
+        srcPosRef.current = cur.currentTime;
+        setSrcPos(cur.currentTime);
+      }
       if (cur.ended) { setSrcPlaying(false); return; }
       srcRafRef.current = requestAnimationFrame(tick);
     };
@@ -1304,8 +1326,8 @@ export default function MusicLayerV3() {
     const a = srcAudioRef.current;
     if (a) {
       if (a.src !== newTrack.url) a.src = newTrack.url;
-      a.volume      = volRef.current;
-      a.currentTime = Math.max(0, at);
+      a.volume = volRef.current;
+      seekAudioEl(a, at);
       if (srcPlayingRef.current) a.play().catch(() => {});
     }
   }, [stopSource]);
@@ -1369,8 +1391,9 @@ export default function MusicLayerV3() {
   return (
     <>
       <style>{CSS}</style>
-      <audio ref={audioRef} />
-      <audio ref={srcAudioRef} />
+      {/* Preload so a seek made before playback has a loaded element to land on. */}
+      <audio ref={audioRef} preload="auto" />
+      <audio ref={srcAudioRef} preload="auto" />
 
       <div className="bms">
 
@@ -1691,7 +1714,9 @@ export default function MusicLayerV3() {
                             <span className="bms-src-name">{activeTrack.name}</span>
                             {activeTrack.analysing
                               ? <span className="bms-wrow-busy">Analysing…</span>
-                              : <span className="bms-src-tag">plays on its own — picture stays put</span>}
+                              : <span className="bms-src-tag">
+                                  click the waveform to move the song, then <b>Play track</b> — the video stays put
+                                </span>}
                           </div>
 
                           <div
@@ -1751,10 +1776,11 @@ export default function MusicLayerV3() {
                           </div>
 
                           <div className="bms-src-bar">
-                            <button className="bms-srcbtn play" onClick={toggleSource} aria-label={srcPlaying ? "Pause track" : "Audition track"}>
+                            <button className={`bms-srcbtn play${srcPlaying ? " on" : ""}`} onClick={toggleSource}>
                               {srcPlaying
                                 ? <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
                                 : <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z" /></svg>}
+                              <span>{srcPlaying ? "Stop" : "Play track"}</span>
                             </button>
 
                             <button className="bms-srcbtn" onClick={() => markSource("in")}>Set in</button>
