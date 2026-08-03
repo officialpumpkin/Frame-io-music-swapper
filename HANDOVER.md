@@ -87,6 +87,32 @@ media queries; iframes cannot reproduce the mobile URL-bar discrepancy because `
 4. **Redesigned + rebranded** — video-centric cinema shell, floating auto-hiding transport,
    scrubber, fullscreen (`F`), collapsible waveform dock, tracks drawer that becomes a
    bottom sheet on mobile. Renamed to Brightworks Music Swapper — powered by Frame.io.
+5. **Source/record spotting model** — see below.
+
+## How music is placed against picture
+
+Modelled on a source monitor and a record timeline, because the old single-playhead
+design meant scrubbing a 3-minute song was silently scrubbing a 30-second cut.
+
+**The dock is the source monitor.** The selected track plays on its own `<audio>` element
+with its own playhead (`srcPos`), so auditioning never moves the video. `A` plays, `I` and
+`O` mark in and out on the song, and the marks are stored per track (`srcIn` / `srcOut`)
+so switching tracks and coming back keeps your selection.
+
+**The lane under the play bar is the record timeline.** `Enter`, or "Add to timeline",
+places the marked region as a clip at the video playhead. A clip is
+`{ trackId, start, sourceIn, duration }` — where it sits in the cut, where in the song it
+starts, and how long it runs. Drag the body to slide it, drag an edge to trim, or nudge
+with `←` / `→` (one frame, or a second with shift). Trimming the head advances `sourceIn`
+by the same amount, so music already lined up against picture stays lined up.
+
+**With no clips placed, nothing changed** — the selected track runs from the top, which is
+the path that was already working. `renderMusicMix` keeps that as its fallback.
+
+Scheduling is unit-tested: `node scratchpad/schedule.test.mjs` stubs `OfflineAudioContext`
+and asserts start time, source offset and duration for each clip, including truncation at
+the end of the video and at the end of the song. That test is in the session scratchpad,
+not the repo — worth moving in if this grows.
 
 Verified against the real asset (`https://f.io/b0ztdShu` → J26024 Souvenaid, 1920×1080,
 30.04s): export produced a valid 1920×1080 / 30.0s / avc1+mp4a file, with the music
@@ -113,9 +139,9 @@ verified structurally — the symptom can't be reproduced outside a real phone. 
 check in portrait that the waveform dock and the sheet's Export button are reachable. If
 still clipped, the fallback is driving layout from the `visualViewport` API.
 
-**Untested: multi-track export.** Only a single track with no in/out points has been run
-end-to-end. The arrangement path (multiple tracks with in/out points) is implemented and
-mirrors the playback routing, but unexercised.
+**Untested against a real render: multi-clip export.** The scheduling is covered by unit
+tests (see below) but only a single whole-track export has been rendered through ffmpeg
+end-to-end and inspected.
 
 **`review_links` is not a V4 endpoint.** V4 replaced review links with shares. Your share
 link works because it resolves via the trailing file ID, but a bare `/share/{id}` URL with

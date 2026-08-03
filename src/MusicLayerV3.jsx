@@ -219,6 +219,8 @@ function WaveformSVG({ waveform, progress, color, height = 56, dimmed = false })
 
 function uid() { return Math.random().toString(36).slice(2,10); }
 
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(v, hi)); }
+
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const CSS = `
@@ -476,14 +478,75 @@ const CSS = `
 }
 .bms-rm:hover { color:var(--red); background:#EF444414; }
 
-.bms-io { display:flex; align-items:center; gap:5px; margin-top:8px; }
-.bms-io-lbl { font-size:9px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; }
-.bms-io-inp {
-  background:var(--bg); border:1px solid var(--line); color:#9A9AB8; border-radius:6px;
-  padding:5px; font-size:10.5px; width:52px; text-align:center; outline:none;
-  font-family:'IBM Plex Mono',monospace;
+.bms-io { margin-top:7px; font-size:9.5px; color:var(--dim); letter-spacing:.04em; }
+
+/* ── Clip lane ───────────────────────────────────────────────────────────────
+   Placed music clips, drawn in video time directly under the play bar so a
+   clip's position reads against the picture it is scored to. */
+.bms-lane {
+  position:relative; height:26px; margin-top:6px; border-radius:5px;
+  background:rgba(255,255,255,.05); overflow:hidden; touch-action:none;
 }
-.bms-io-inp:focus { border-color:#F59E0B55; color:var(--text); }
+.bms-clip {
+  position:absolute; top:2px; bottom:2px; border:1px solid; border-radius:4px;
+  cursor:grab; overflow:hidden; display:flex; align-items:center; min-width:8px;
+}
+.bms-clip.on { cursor:grabbing; box-shadow:0 0 0 1px rgba(255,255,255,.22) inset; }
+.bms-clip-name {
+  font-size:9px; font-weight:600; padding:0 8px; pointer-events:none;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.bms-clip-edge { position:absolute; top:0; bottom:0; width:9px; cursor:ew-resize; }
+.bms-clip-edge.in  { left:0; }
+.bms-clip-edge.out { right:0; }
+.bms-clip-rm {
+  position:absolute; right:2px; top:50%; transform:translateY(-50%);
+  width:15px; height:15px; border:0; border-radius:4px; cursor:pointer;
+  background:rgba(0,0,0,.45); color:#E8E8F2; font-size:13px; line-height:1;
+}
+.bms-lane-head {
+  position:absolute; top:0; bottom:0; width:1px; background:var(--accent);
+  pointer-events:none; opacity:.85;
+}
+.bms-lane-hint { margin-top:5px; font-size:9.5px; color:rgba(232,232,242,.5); }
+
+/* ── Source monitor ──────────────────────────────────────────────────────────
+   The selected track on its own transport: scrubbing and playing here move the
+   song only, so you can find a section without disturbing the picture. */
+.bms-src { border-bottom:1px solid #14141E; background:#15151F; }
+.bms-src-head { display:flex; align-items:center; gap:7px; padding:8px 12px 0; }
+.bms-src-name { font-size:11px; font-weight:600; color:#BFBFD6; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bms-src-tag { font-size:9px; color:var(--dim); letter-spacing:.04em; white-space:nowrap; }
+.bms-src-wave { position:relative; margin:4px 12px 0; cursor:pointer; touch-action:none; user-select:none; }
+.bms-src-mask { position:absolute; top:0; bottom:0; background:rgba(8,8,13,.66); pointer-events:none; }
+.bms-src-region {
+  position:absolute; top:0; bottom:0; border-left:1.5px solid; border-right:1.5px solid;
+  pointer-events:none; opacity:.8;
+}
+.bms-src-handle {
+  position:absolute; top:0; bottom:0; width:11px; margin-left:-5.5px; cursor:ew-resize;
+  border-radius:3px; opacity:.22; touch-action:none;
+}
+.bms-src-handle:hover { opacity:.5; }
+.bms-src-playhead {
+  position:absolute; top:0; bottom:0; width:1px; background:#E8E8F2;
+  pointer-events:none; opacity:.9;
+}
+.bms-src-bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:8px 12px 10px; }
+.bms-srcbtn {
+  background:var(--surface-2); border:1px solid var(--line); color:#9A9AB8;
+  border-radius:6px; padding:5px 9px; font-size:10px; font-weight:500; cursor:pointer;
+  white-space:nowrap;
+}
+.bms-srcbtn:hover:not(:disabled) { color:var(--text); border-color:#2C2C3E; }
+.bms-srcbtn:disabled { opacity:.4; cursor:default; }
+.bms-srcbtn.play { width:28px; height:28px; padding:0; display:flex; align-items:center; justify-content:center; color:var(--text); }
+.bms-srcbtn.play svg { width:14px; height:14px; }
+.bms-srcbtn.quiet { background:transparent; border-color:transparent; color:var(--dim); }
+.bms-srcbtn.add { margin-left:auto; background:#10B98118; border-color:#10B98140; color:var(--green); }
+.bms-srcbtn.add:hover:not(:disabled) { background:#10B98126; border-color:#10B98166; }
+.bms-src-read { font-size:10px; color:#9A9AB8; }
+.bms-src-dim { color:var(--dim); }
 
 /* ── Export ──────────────────────────────────────────────────────────────── */
 .bms-export {
@@ -535,6 +598,16 @@ const CSS = `
   .bms-title { font-size:10px; letter-spacing:.1em; }
   .bms-vol input[type=range] { display:none; }
   .bms-transport { gap:7px; }
+
+  /* No room for the running commentary; the marks readout is the useful half. */
+  .bms-src-tag { display:none; }
+  .bms-src-read .bms-src-dim { display:block; margin-left:0; }
+  /* Add-to-timeline gets its own row rather than being squeezed to an ellipsis. */
+  .bms-srcbtn.add { margin-left:0; width:100%; padding:8px; text-align:center; }
+  /* Fatter targets — these are dragged with a thumb. */
+  .bms-src-handle { width:18px; margin-left:-9px; opacity:.4; }
+  .bms-clip-edge { width:14px; }
+  .bms-lane { height:30px; }
 }
 
 /* The full lockup fits at 360px (a very common Android width); only below it
@@ -583,6 +656,20 @@ export default function MusicLayerV3() {
   const [activeTrackId, setActiveTrackId] = useState(null);
   const [dragOver, setDragOver]     = useState(false);
 
+  // ── Source monitor
+  //
+  // The selected track is auditioned on its own transport, in song time, so
+  // scrubbing to find a hook never moves the picture. Its in/out marks live on
+  // the track itself (srcIn / srcOut) so each one remembers where you were.
+  const [srcPos, setSrcPos]         = useState(0);
+  const [srcPlaying, setSrcPlaying] = useState(false);
+
+  // ── Timeline clips — marked source regions placed against the picture.
+  // { id, trackId, start (timeline sec), sourceIn (song sec), duration (sec) }
+  const [clips, setClips]                   = useState([]);
+  const [selectedClipId, setSelectedClipId] = useState(null);
+  const [nudgeHint, setNudgeHint]           = useState("");
+
   // ── Export
   const [exportState, setExportState] = useState(null); // { phase, progress }
   const [exportErr, setExportErr]     = useState("");
@@ -598,7 +685,9 @@ export default function MusicLayerV3() {
   // ── Refs
   const videoRef     = useRef(null);
   const audioRef     = useRef(null);
+  const srcAudioRef  = useRef(null);
   const rafRef       = useRef(null);
+  const srcRafRef    = useRef(null);
   const startRef     = useRef(0);
   const posRef       = useRef(0);
   const waveStackRef = useRef(null);
@@ -611,15 +700,30 @@ export default function MusicLayerV3() {
   const playingRef       = useRef(playing);
   const volRef           = useRef(vol);
   const durRef           = useRef(dur);
+  const clipsRef         = useRef(clips);
+  const srcPosRef        = useRef(0);
+  const srcPlayingRef    = useRef(false);
+  const laneRef          = useRef(null);
+  const clipDragRef      = useRef(null);
+  const srcWaveRef       = useRef(null);
+  const markDragRef      = useRef(null);
 
   useEffect(() => { tracksRef.current        = tracks;        }, [tracks]);
   useEffect(() => { activeTrackIdRef.current = activeTrackId; }, [activeTrackId]);
   useEffect(() => { playingRef.current       = playing;       }, [playing]);
   useEffect(() => { volRef.current           = vol;           }, [vol]);
+  useEffect(() => { clipsRef.current         = clips;         }, [clips]);
+  useEffect(() => { srcPlayingRef.current    = srcPlaying;    }, [srcPlaying]);
 
   const activeTrack  = tracks.find(t => t.id === activeTrackId) || null;
   const effectiveDur = currentAsset ? dur : (activeTrack?.audioDuration || dur || 0);
   useEffect(() => { durRef.current = effectiveDur; }, [effectiveDur]);
+
+  // Source-monitor marks, resolved against the selected track.
+  const srcDur = activeTrack?.audioDuration || 0;
+  const srcIn  = Math.max(0, activeTrack?.srcIn ?? 0);
+  const srcOut = Math.min(activeTrack?.srcOut ?? srcDur, srcDur) || srcDur;
+  const srcLen = Math.max(0, srcOut - srcIn);
 
   // ── Auto-fetch account_id on mount — V4 requires it in every endpoint path
   useEffect(() => {
@@ -695,14 +799,40 @@ export default function MusicLayerV3() {
     };
   }, [currentAsset?.url]);
 
-  // ── Music track routing
-  const trackForTime = useCallback((time, list) => {
-    for (const t of list) {
-      const inP  = t.inPoint  ?? 0;
-      const outP = t.outPoint ?? Infinity;
-      if (time >= inP && time < outP) return t;
+  // ── Timeline routing
+  //
+  // Once clips are placed they own the timeline: each one maps a marked region
+  // of a song onto a span of picture. With no clips placed the app keeps its
+  // original behaviour — the selected track simply runs from the top.
+  const clipAt = useCallback((time, list) => {
+    for (const c of list) {
+      if (time >= c.start && time < c.start + c.duration) return c;
     }
     return null;
+  }, []);
+
+  // What the timeline audio element should be doing at a given position:
+  // the file to play and where in that file to be, or null for silence.
+  const timelineCueAt = useCallback((time) => {
+    const list  = clipsRef.current;
+    const found = tracksRef.current;
+    if (list.length) {
+      const c = clipAt(time, list);
+      if (!c) return null;
+      const track = found.find(t => t.id === c.trackId);
+      if (!track) return null;
+      return { url: track.url, at: c.sourceIn + (time - c.start), clipId: c.id, trackId: track.id };
+    }
+    const track = found.find(t => t.id === activeTrackIdRef.current) || found[0];
+    if (!track) return null;
+    return { url: track.url, at: time, clipId: null, trackId: track.id };
+  }, [clipAt]);
+
+  // ── Source-monitor transport (song only — picture never moves)
+  const stopSource = useCallback(() => {
+    srcAudioRef.current?.pause();
+    setSrcPlaying(false);
+    cancelAnimationFrame(srcRafRef.current);
   }, []);
 
   // ── Playback
@@ -713,26 +843,35 @@ export default function MusicLayerV3() {
       v?.pause();
       audioRef.current?.pause();
     } else {
+      stopSource();
       startRef.current = performance.now();
       posRef.current   = pos;
       setPlaying(true);
       v?.play().catch(() => {});
-      const track = trackForTime(pos, tracks);
-      if (track && audioRef.current) {
-        if (audioRef.current.src !== track.url) audioRef.current.src = track.url;
-        audioRef.current.volume      = vol;
-        audioRef.current.currentTime = Math.max(0, pos - (track.inPoint ?? 0) + (track.audioOffset ?? 0));
-        audioRef.current.play().catch(() => {});
+      const cue = timelineCueAt(pos);
+      const a   = audioRef.current;
+      if (cue && a) {
+        if (a.src !== cue.url) a.src = cue.url;
+        a.volume      = vol;
+        a.currentTime = Math.max(0, cue.at);
+        a.play().catch(() => {});
+      } else {
+        a?.pause();
       }
     }
-  }, [playing, pos, tracks, vol, trackForTime]);
+  }, [playing, pos, vol, timelineCueAt, stopSource]);
 
   const handleStop = useCallback(() => {
     const v = videoRef.current;
     setPlaying(false);
     setPos(0);
+    posRef.current = 0;
     if (v) { v.pause(); v.currentTime = 0; }
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      delete audioRef.current.dataset.clipId;
+    }
   }, []);
 
   // RAF loop for music-only mode
@@ -754,31 +893,31 @@ export default function MusicLayerV3() {
   }, [playing, currentAsset]);
 
   // Volume sync
-  useEffect(() => { if (audioRef.current) audioRef.current.volume = vol; }, [vol]);
-
-  // Auto-route music (only when in/out arrangement is defined)
   useEffect(() => {
-    if (!playing || tracks.length === 0) return;
-    const hasArrangement = tracks.some(t => t.inPoint != null || t.outPoint != null);
-    if (!hasArrangement) return;
-    const track = trackForTime(pos, tracks);
-    if (!track) { audioRef.current?.pause(); return; }
+    if (audioRef.current)    audioRef.current.volume    = vol;
+    if (srcAudioRef.current) srcAudioRef.current.volume = vol;
+  }, [vol]);
+
+  // Auto-route the timeline audio as the playhead crosses clip boundaries.
+  useEffect(() => {
+    if (!playing || clips.length === 0) return;
     const a = audioRef.current;
     if (!a) return;
-    if (a.src !== track.url) {
-      a.src          = track.url;
-      a.volume       = vol;
-      a.currentTime  = Math.max(0, pos - (track.inPoint ?? 0) + (track.audioOffset ?? 0));
+    const cue = timelineCueAt(pos);
+    if (!cue) { a.pause(); return; }
+    // Only re-cue on a change of clip; within a clip the element free-runs.
+    if (a.dataset.clipId !== String(cue.clipId)) {
+      a.dataset.clipId = String(cue.clipId);
+      a.src            = cue.url;
+      a.volume         = volRef.current;
+      a.currentTime    = Math.max(0, cue.at);
       a.play().catch(() => {});
-      setActiveTrackId(track.id);
     }
-  }, [Math.floor(pos * 4), playing]);
+  }, [Math.floor(pos * 4), playing, clips.length, timelineCueAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Seek
+  // ── Seek (timeline)
   const seekTo = useCallback((t) => {
-    const activeT  = tracksRef.current.find(x => x.id === activeTrackIdRef.current);
-    const trackDur = activeT?.audioDuration || durRef.current || 300;
-    const s = Math.max(0, Math.min(t, trackDur));
+    const s = Math.max(0, Math.min(t, durRef.current || 300));
     setPos(s);
     posRef.current   = s;
     startRef.current = performance.now();
@@ -786,12 +925,221 @@ export default function MusicLayerV3() {
     const v = videoRef.current;
     if (v) v.currentTime = s;
 
-    if (activeT && audioRef.current) {
-      audioRef.current.volume      = volRef.current;
-      audioRef.current.currentTime = Math.max(0, s - (activeT.inPoint ?? 0));
-      if (playingRef.current) audioRef.current.play().catch(() => {});
+    const a   = audioRef.current;
+    const cue = timelineCueAt(s);
+    if (a) {
+      if (!cue) { a.pause(); return; }
+      if (a.src !== cue.url) a.src = cue.url;
+      a.dataset.clipId = String(cue.clipId);
+      a.volume         = volRef.current;
+      a.currentTime    = Math.max(0, cue.at);
+      if (playingRef.current) a.play().catch(() => {});
+    }
+  }, [timelineCueAt]);
+
+  // ── Source monitor
+  //
+  // Scrubbing and playing here move the song's own playhead only. The video is
+  // deliberately untouched: you audition the track, mark the section you want,
+  // then place it against picture as a clip.
+  const seekSource = useCallback((t) => {
+    const track = tracksRef.current.find(x => x.id === activeTrackIdRef.current);
+    const d = track?.audioDuration || 0;
+    const s = Math.max(0, Math.min(t, d));
+    setSrcPos(s);
+    srcPosRef.current = s;
+    const a = srcAudioRef.current;
+    if (a && track) {
+      if (a.src !== track.url) a.src = track.url;
+      a.volume      = volRef.current;
+      a.currentTime = s;
     }
   }, []);
+
+  const toggleSource = useCallback(() => {
+    const track = tracksRef.current.find(x => x.id === activeTrackIdRef.current);
+    const a = srcAudioRef.current;
+    if (!track || !a) return;
+
+    if (srcPlayingRef.current) { stopSource(); return; }
+
+    // Auditioning and timeline playback are mutually exclusive.
+    if (playingRef.current) {
+      setPlaying(false);
+      videoRef.current?.pause();
+      audioRef.current?.pause();
+    }
+
+    if (a.src !== track.url) a.src = track.url;
+    a.volume      = volRef.current;
+    a.currentTime = srcPosRef.current;
+    a.play().catch(() => {});
+    setSrcPlaying(true);
+
+    const tick = () => {
+      const cur = srcAudioRef.current;
+      if (!cur) return;
+      srcPosRef.current = cur.currentTime;
+      setSrcPos(cur.currentTime);
+      if (cur.ended) { setSrcPlaying(false); return; }
+      srcRafRef.current = requestAnimationFrame(tick);
+    };
+    srcRafRef.current = requestAnimationFrame(tick);
+  }, [stopSource]);
+
+  useEffect(() => () => cancelAnimationFrame(srcRafRef.current), []);
+
+  // Marking in/out on the song. Each mark is stored on the track, so switching
+  // tracks and coming back keeps your selection.
+  const markSource = useCallback((which) => {
+    const id = activeTrackIdRef.current;
+    if (!id) return;
+    const at = srcPosRef.current;
+    setTracks(prev => prev.map(t => {
+      if (t.id !== id) return t;
+      const d = t.audioDuration || 0;
+      if (which === "in") {
+        const out = t.srcOut ?? d;
+        return { ...t, srcIn: Math.min(at, Math.max(0, out - 0.1)) };
+      }
+      const inp = t.srcIn ?? 0;
+      return { ...t, srcOut: Math.max(at, inp + 0.1) };
+    }));
+  }, []);
+
+  const clearSourceMarks = useCallback(() => {
+    const id = activeTrackIdRef.current;
+    if (!id) return;
+    setTracks(prev => prev.map(t => t.id === id ? { ...t, srcIn: null, srcOut: null } : t));
+  }, []);
+
+  const setSourceMark = useCallback((which, value) => {
+    const id = activeTrackIdRef.current;
+    if (!id) return;
+    setTracks(prev => prev.map(t => {
+      if (t.id !== id) return t;
+      const d = t.audioDuration || 0;
+      const v = Math.max(0, Math.min(value, d));
+      return which === "in"
+        ? { ...t, srcIn:  Math.min(v, (t.srcOut ?? d) - 0.1) }
+        : { ...t, srcOut: Math.max(v, (t.srcIn  ?? 0) + 0.1) };
+    }));
+  }, []);
+
+  // ── Place the marked region against picture
+  const addToTimeline = useCallback(() => {
+    const track = tracksRef.current.find(x => x.id === activeTrackIdRef.current);
+    if (!track?.audioDuration) return;
+    const d    = track.audioDuration;
+    const from = Math.max(0, track.srcIn ?? 0);
+    const to   = Math.min(track.srcOut ?? d, d);
+    const len  = to - from;
+    if (len <= 0.05) return;
+
+    const videoDur = durRef.current || 0;
+    const start    = Math.max(0, Math.min(posRef.current, Math.max(0, videoDur - 0.05)));
+    const clip = { id: uid(), trackId: track.id, start, sourceIn: from, duration: len };
+
+    stopSource();
+    setClips(prev => [...prev, clip].sort((a, b) => a.start - b.start));
+    setSelectedClipId(clip.id);
+    setNudgeHint(`Added at ${fmt(start, DISPLAY_FPS)} — drag or use ← → to line it up`);
+  }, [stopSource]);
+
+  const removeClip = useCallback((id) => {
+    setClips(prev => prev.filter(c => c.id !== id));
+    setSelectedClipId(prev => (prev === id ? null : prev));
+    if (audioRef.current) delete audioRef.current.dataset.clipId;
+  }, []);
+
+  // Nudge the selected clip along the timeline. Clip length and source region
+  // are untouched — this only changes where it lands against picture.
+  const nudgeClip = useCallback((deltaSec) => {
+    const id = selectedClipId;
+    if (!id) return;
+    setClips(prev => {
+      const next = prev.map(c => {
+        if (c.id !== id) return c;
+        const limit = Math.max(0, (durRef.current || 0) - c.duration);
+        return { ...c, start: Math.max(0, Math.min(c.start + deltaSec, limit)) };
+      });
+      const moved = next.find(c => c.id === id);
+      if (moved) setNudgeHint(`Starts at ${fmt(moved.start, DISPLAY_FPS)}`);
+      return next.sort((a, b) => a.start - b.start);
+    });
+    if (audioRef.current) delete audioRef.current.dataset.clipId;
+  }, [selectedClipId]);
+
+  // ── Dragging clips on the lane
+  const beginClipDrag = useCallback((e, clip, mode) => {
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setSelectedClipId(clip.id);
+    clipDragRef.current = {
+      id: clip.id, mode, x: e.clientX,
+      start: clip.start, duration: clip.duration, sourceIn: clip.sourceIn,
+    };
+  }, []);
+
+  const moveClipDrag = useCallback((e) => {
+    const d    = clipDragRef.current;
+    const lane = laneRef.current;
+    if (!d || !lane) return;
+    const width = lane.getBoundingClientRect().width;
+    const total = durRef.current || 0;
+    if (!width || !total) return;
+    const delta = ((e.clientX - d.x) / width) * total;
+
+    setClips(prev => prev.map(c => {
+      if (c.id !== d.id) return c;
+
+      if (d.mode === "move") {
+        return { ...c, start: clamp(d.start + delta, 0, Math.max(0, total - c.duration)) };
+      }
+
+      if (d.mode === "in") {
+        // Trimming the head moves the source in-point with it, so the music
+        // that was lined up against picture stays lined up.
+        const shift = clamp(delta, -Math.min(d.start, d.sourceIn), d.duration - 0.1);
+        return { ...c, start: d.start + shift, sourceIn: d.sourceIn + shift, duration: d.duration - shift };
+      }
+
+      const track = tracksRef.current.find(t => t.id === c.trackId);
+      const room  = (track?.audioDuration || Infinity) - d.sourceIn;
+      return { ...c, duration: clamp(d.duration + delta, 0.1, Math.min(room, total - d.start)) };
+    }));
+  }, []);
+
+  const endClipDrag = useCallback(() => {
+    const d = clipDragRef.current;
+    clipDragRef.current = null;
+    if (!d) return;
+    if (audioRef.current) delete audioRef.current.dataset.clipId;
+    const moved = clipsRef.current.find(c => c.id === d.id);
+    if (moved) setNudgeHint(`Starts at ${fmt(moved.start, DISPLAY_FPS)}`);
+  }, []);
+
+  // ── Dragging on the source waveform
+  const srcPosFromEvent = useCallback((clientX) => {
+    const el = srcWaveRef.current;
+    const track = tracksRef.current.find(t => t.id === activeTrackIdRef.current);
+    if (!el || !track?.audioDuration) return null;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width) return null;
+    return clamp((clientX - rect.left) / rect.width, 0, 1) * track.audioDuration;
+  }, []);
+
+  const beginMarkDrag = useCallback((e, which) => {
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    markDragRef.current = which;
+  }, []);
+
+  const moveMarkDrag = useCallback((e) => {
+    if (!markDragRef.current) return;
+    const at = srcPosFromEvent(e.clientX);
+    if (at != null) setSourceMark(markDragRef.current, at);
+  }, [srcPosFromEvent, setSourceMark]);
 
   // ── Full screen
   //
@@ -843,12 +1191,33 @@ export default function MusicLayerV3() {
     const onKey = (e) => {
       const inField = e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA";
       if (inField) return;
-      if (e.code === "Space") { e.preventDefault(); handlePlay(); wakeChrome(); }
-      if (e.code === "KeyF")  { e.preventDefault(); toggleFullscreen(); }
+
+      // Arrows nudge the selected clip when there is one, otherwise they step
+      // the video playhead. Shift makes either jump a second at a time.
+      if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+        e.preventDefault();
+        const dir  = e.code === "ArrowRight" ? 1 : -1;
+        const step = (e.shiftKey ? 1 : 1 / DISPLAY_FPS) * dir;
+        if (selectedClipId) nudgeClip(step);
+        else { seekTo(posRef.current + step); wakeChrome(); }
+        return;
+      }
+
+      if (e.code === "Space")  { e.preventDefault(); handlePlay(); wakeChrome(); }
+      if (e.code === "KeyF")   { e.preventDefault(); toggleFullscreen(); }
+      if (e.code === "KeyA")   { e.preventDefault(); toggleSource(); }
+      if (e.code === "KeyI")   { e.preventDefault(); markSource("in"); }
+      if (e.code === "KeyO")   { e.preventDefault(); markSource("out"); }
+      if (e.code === "Enter")  { e.preventDefault(); addToTimeline(); }
+      if ((e.code === "Delete" || e.code === "Backspace") && selectedClipId) {
+        e.preventDefault();
+        removeClip(selectedClipId);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handlePlay, toggleFullscreen, wakeChrome]);
+  }, [handlePlay, toggleFullscreen, wakeChrome, toggleSource, markSource,
+      addToTimeline, selectedClipId, nudgeClip, removeClip, seekTo]);
 
   // ── Track file handling
   const handleFiles = useCallback((files) => {
@@ -864,7 +1233,7 @@ export default function MusicLayerV3() {
       wave: Array.from({ length: 300 }, () => 0.15),
       analysing: true,
       size: f.size > 1048576 ? `${(f.size/1048576).toFixed(1)} MB` : `${(f.size/1024).toFixed(0)} KB`,
-      inPoint: null, outPoint: null, audioOffset: 0,
+      srcIn: null, srcOut: null,
     }));
 
     const isFirstBatch = tracks.length === 0;
@@ -872,9 +1241,15 @@ export default function MusicLayerV3() {
 
     if (isFirstBatch) {
       setActiveTrackId(newTracks[0].id);
+      setSrcPos(0);
+      srcPosRef.current = 0;
       if (audioRef.current) {
         audioRef.current.src    = newTracks[0].url;
         audioRef.current.volume = vol;
+      }
+      if (srcAudioRef.current) {
+        srcAudioRef.current.src    = newTracks[0].url;
+        srcAudioRef.current.volume = vol;
       }
     }
 
@@ -891,10 +1266,15 @@ export default function MusicLayerV3() {
 
   const removeTrack = useCallback((id, e) => {
     e.stopPropagation();
+    setClips(prev => prev.filter(c => c.trackId !== id));
     setTracks(prev => {
       const next = prev.filter(t => t.id !== id);
-      if (id === activeTrackId) {
+      if (id === activeTrackIdRef.current) {
         setActiveTrackId(next[0]?.id || null);
+        setSrcPos(0);
+        srcPosRef.current = 0;
+        stopSource();
+        if (srcAudioRef.current && next[0]) srcAudioRef.current.src = next[0].url;
         if (audioRef.current) {
           if (next[0]) audioRef.current.src = next[0].url;
           else { audioRef.current.pause(); setPlaying(false); }
@@ -902,57 +1282,46 @@ export default function MusicLayerV3() {
       }
       return next;
     });
-  }, [activeTrackId]);
+  }, [stopSource]);
 
-  const updateTrackIO = useCallback((id, field, val) => {
-    const n = parseFloat(val);
-    setTracks(prev => prev.map(t => t.id === id ? { ...t, [field]: isNaN(n) ? null : n } : t));
-  }, []);
-
-  const selectTrack = useCallback((id, overridePos = null) => {
-    const currentActiveId = activeTrackIdRef.current;
-    const currentTracks   = tracksRef.current;
-    const currentPos      = posRef.current;
-
-    if (id === currentActiveId && overridePos === null) return;
-
-    const newTrack = currentTracks.find(x => x.id === id);
+  // Loading a track into the source monitor. The timeline playhead stays where
+  // it is — swapping which song you are auditioning must not move picture.
+  const selectTrack = useCallback((id, overrideSrcPos = null) => {
+    const newTrack = tracksRef.current.find(x => x.id === id);
     if (!newTrack) return;
 
-    setTracks(prev => prev.map(t =>
-      t.id === currentActiveId ? { ...t, savedPos: currentPos } : t
-    ));
+    const changing = id !== activeTrackIdRef.current;
+    if (changing) stopSource();
 
-    const restorePos = overridePos !== null ? overridePos : (newTrack.savedPos ?? 0);
+    const at = overrideSrcPos !== null
+      ? overrideSrcPos
+      : (changing ? (newTrack.srcIn ?? 0) : srcPosRef.current);
 
     setActiveTrackId(id);
-    setPos(restorePos);
-    posRef.current   = restorePos;
-    startRef.current = performance.now();
+    setSrcPos(at);
+    srcPosRef.current = at;
 
-    if (audioRef.current) {
-      audioRef.current.src         = newTrack.url;
-      audioRef.current.volume      = volRef.current;
-      audioRef.current.currentTime = Math.max(0, restorePos - (newTrack.inPoint ?? 0));
-      if (playingRef.current) audioRef.current.play().catch(() => {});
+    const a = srcAudioRef.current;
+    if (a) {
+      if (a.src !== newTrack.url) a.src = newTrack.url;
+      a.volume      = volRef.current;
+      a.currentTime = Math.max(0, at);
+      if (srcPlayingRef.current) a.play().catch(() => {});
     }
-  }, []);
+  }, [stopSource]);
 
+  // Clicking a waveform row loads that track into the source monitor and moves
+  // the song's playhead. Picture is deliberately left alone.
   const handleWaveformClick = useCallback((e, trackId) => {
-    const rect     = e.currentTarget.getBoundingClientRect();
-    const PAD      = 13;
-    const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left - PAD) / (rect.width - PAD * 2)));
+    const rect  = e.currentTarget.getBoundingClientRect();
+    if (!rect.width) return;
+    const frac  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const track = tracksRef.current.find(t => t.id === trackId);
+    const at    = frac * (track?.audioDuration || 0);
 
-    const clickedTrack = tracksRef.current.find(t => t.id === trackId);
-    const trackDur     = clickedTrack?.audioDuration || durRef.current || 0;
-    const newPos       = fraction * trackDur;
-
-    if (trackId !== activeTrackIdRef.current) {
-      selectTrack(trackId, newPos);
-    } else {
-      seekTo(newPos);
-    }
-  }, [selectTrack, seekTo]);
+    if (trackId !== activeTrackIdRef.current) selectTrack(trackId, at);
+    else seekSource(at);
+  }, [selectTrack, seekSource]);
 
   // ── Export the cut with the music arrangement mixed in
   const handleExport = useCallback(async () => {
@@ -965,6 +1334,7 @@ export default function MusicLayerV3() {
       const blob = await exportWithMusic({
         videoUrl:      currentAsset.url,
         tracks,
+        clips,
         activeTrackId,
         volume:        vol,
         durationSec:   dur || videoRef.current?.duration,
@@ -975,9 +1345,15 @@ export default function MusicLayerV3() {
       setExportErr(e.message);
     }
     setExportState(null);
-  }, [currentAsset, tracks, activeTrackId, vol, dur, exportState]);
+  }, [currentAsset, tracks, clips, activeTrackId, vol, dur, exportState]);
 
   // ── Derived
+  const clipCounts = useMemo(() => {
+    const counts = {};
+    for (const c of clips) counts[c.trackId] = (counts[c.trackId] || 0) + 1;
+    return counts;
+  }, [clips]);
+
   const pbAnim = useMemo(() => [
     { height:"60%", animation: playing ? "bms-b0 .28s ease infinite alternate" : "none" },
     { height:"30%", animation: playing ? "bms-b1 .42s ease infinite alternate" : "none" },
@@ -994,6 +1370,7 @@ export default function MusicLayerV3() {
     <>
       <style>{CSS}</style>
       <audio ref={audioRef} />
+      <audio ref={srcAudioRef} />
 
       <div className="bms">
 
@@ -1183,6 +1560,64 @@ export default function MusicLayerV3() {
                   </div>
                 </div>
 
+                {/* Music clips, in video time, under the play bar */}
+                {clips.length > 0 && effectiveDur > 0 && (
+                  <div className="bms-lane" ref={laneRef}>
+                    {clips.map(c => {
+                      const track = tracks.find(t => t.id === c.trackId);
+                      if (!track) return null;
+                      const left = (c.start / effectiveDur) * 100;
+                      const wide = (c.duration / effectiveDur) * 100;
+                      const on   = c.id === selectedClipId;
+                      return (
+                        <div
+                          key={c.id}
+                          className={`bms-clip${on ? " on" : ""}`}
+                          style={{
+                            left: `${left}%`, width: `${wide}%`,
+                            background: `${track.color}2E`,
+                            borderColor: on ? track.color : `${track.color}66`,
+                          }}
+                          onPointerDown={e => beginClipDrag(e, c, "move")}
+                          onPointerMove={moveClipDrag}
+                          onPointerUp={endClipDrag}
+                          onPointerCancel={endClipDrag}
+                          title={`${track.name} — from ${fmt(c.sourceIn, DISPLAY_FPS)} of the track`}
+                        >
+                          <span className="bms-clip-name" style={{ color: track.color }}>{track.name}</span>
+                          <span
+                            className="bms-clip-edge in"
+                            onPointerDown={e => beginClipDrag(e, c, "in")}
+                            onPointerMove={moveClipDrag}
+                            onPointerUp={endClipDrag}
+                            onPointerCancel={endClipDrag}
+                          />
+                          <span
+                            className="bms-clip-edge out"
+                            onPointerDown={e => beginClipDrag(e, c, "out")}
+                            onPointerMove={moveClipDrag}
+                            onPointerUp={endClipDrag}
+                            onPointerCancel={endClipDrag}
+                          />
+                          {on && (
+                            <button
+                              className="bms-clip-rm"
+                              onPointerDown={e => e.stopPropagation()}
+                              onClick={e => { e.stopPropagation(); removeClip(c.id); }}
+                              aria-label={`Remove ${track.name} clip`}
+                            >×</button>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <div className="bms-lane-head" style={{ left: `${scrubPct}%` }} />
+                  </div>
+                )}
+
+                {clips.length > 0 && nudgeHint && (
+                  <div className="bms-lane-hint mono">{nudgeHint}</div>
+                )}
+
                 <div className="bms-transport">
                   <button
                     className="bms-play"
@@ -1238,24 +1673,119 @@ export default function MusicLayerV3() {
                      fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                   <path d="M6 9l6 6 6-6" />
                 </svg>
-                <span className="bms-dock-label">Waveforms</span>
+                <span className="bms-dock-label">Source</span>
                 <span className="bms-count">{tracks.length || ""}</span>
-                <span className="bms-dock-hint">Click to seek · Space to play · F for full screen</span>
+                <span className="bms-dock-hint">A to audition · I / O to mark · Enter to add</span>
               </button>
 
               {dockOpen && (
                 <div className="bms-dock-body" ref={waveStackRef}>
                   {tracks.length === 0 ? (
-                    <div className="bms-dock-empty">Add music tracks to see their waveforms</div>
+                    <div className="bms-dock-empty">Add music tracks to audition them here</div>
                   ) : (
-                    tracks.map(t => {
-                      const isActive = t.id === activeTrackId;
-                      const rowH = isActive ? 64 : 46;
-                      return (
+                    <>
+                      {activeTrack && (
+                        <div className="bms-src">
+                          <div className="bms-src-head">
+                            <span style={{ width: 6, height: 6, borderRadius: "50%", background: activeTrack.color, flexShrink: 0 }} />
+                            <span className="bms-src-name">{activeTrack.name}</span>
+                            {activeTrack.analysing
+                              ? <span className="bms-wrow-busy">Analysing…</span>
+                              : <span className="bms-src-tag">plays on its own — picture stays put</span>}
+                          </div>
+
+                          <div
+                            className="bms-src-wave"
+                            ref={srcWaveRef}
+                            onPointerDown={e => {
+                              e.currentTarget.setPointerCapture(e.pointerId);
+                              const at = srcPosFromEvent(e.clientX);
+                              if (at != null) seekSource(at);
+                            }}
+                            onPointerMove={e => {
+                              if (e.buttons !== 1 || markDragRef.current) return;
+                              const at = srcPosFromEvent(e.clientX);
+                              if (at != null) seekSource(at);
+                            }}
+                          >
+                            <WaveformSVG
+                              waveform={activeTrack.wave}
+                              progress={srcDur ? srcPos / srcDur : 0}
+                              color={activeTrack.color}
+                              height={72}
+                            />
+
+                            {srcDur > 0 && (
+                              <>
+                                <div className="bms-src-mask" style={{ left: 0, width: `${(srcIn / srcDur) * 100}%` }} />
+                                <div className="bms-src-mask" style={{ left: `${(srcOut / srcDur) * 100}%`, right: 0 }} />
+                                <div
+                                  className="bms-src-region"
+                                  style={{
+                                    left:  `${(srcIn / srcDur) * 100}%`,
+                                    width: `${((srcOut - srcIn) / srcDur) * 100}%`,
+                                    borderColor: activeTrack.color,
+                                  }}
+                                />
+                                <div
+                                  className="bms-src-handle"
+                                  style={{ left: `${(srcIn / srcDur) * 100}%`, background: activeTrack.color }}
+                                  onPointerDown={e => beginMarkDrag(e, "in")}
+                                  onPointerMove={moveMarkDrag}
+                                  onPointerUp={() => { markDragRef.current = null; }}
+                                  onPointerCancel={() => { markDragRef.current = null; }}
+                                  title="Drag to set the in point"
+                                />
+                                <div
+                                  className="bms-src-handle"
+                                  style={{ left: `${(srcOut / srcDur) * 100}%`, background: activeTrack.color }}
+                                  onPointerDown={e => beginMarkDrag(e, "out")}
+                                  onPointerMove={moveMarkDrag}
+                                  onPointerUp={() => { markDragRef.current = null; }}
+                                  onPointerCancel={() => { markDragRef.current = null; }}
+                                  title="Drag to set the out point"
+                                />
+                                <div className="bms-src-playhead" style={{ left: `${(srcPos / srcDur) * 100}%` }} />
+                              </>
+                            )}
+                          </div>
+
+                          <div className="bms-src-bar">
+                            <button className="bms-srcbtn play" onClick={toggleSource} aria-label={srcPlaying ? "Pause track" : "Audition track"}>
+                              {srcPlaying
+                                ? <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
+                                : <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z" /></svg>}
+                            </button>
+
+                            <button className="bms-srcbtn" onClick={() => markSource("in")}>Set in</button>
+                            <button className="bms-srcbtn" onClick={() => markSource("out")}>Set out</button>
+
+                            <span className="bms-src-read mono">
+                              {fmt(srcPos, DISPLAY_FPS)}
+                              <span className="bms-src-dim"> · in {fmt(srcIn, DISPLAY_FPS)} → out {fmt(srcOut, DISPLAY_FPS)} · {srcLen.toFixed(1)}s</span>
+                            </span>
+
+                            {(activeTrack.srcIn != null || activeTrack.srcOut != null) && (
+                              <button className="bms-srcbtn quiet" onClick={clearSourceMarks}>Clear</button>
+                            )}
+
+                            <button
+                              className="bms-srcbtn add"
+                              onClick={addToTimeline}
+                              disabled={!currentAsset || srcLen <= 0.05}
+                              title={currentAsset ? "Place this section at the video playhead" : "Load a video first"}
+                            >
+                              ↓ Add to timeline
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {tracks.filter(t => t.id !== activeTrackId).map(t => (
                         <div
                           key={t.id}
-                          className={`bms-wrow${isActive ? " active" : ""}`}
-                          style={{ height: rowH }}
+                          className="bms-wrow"
+                          style={{ height: 46 }}
                           onClick={e => handleWaveformClick(e, t.id)}
                         >
                           <div className="bms-wrow-label">
@@ -1263,16 +1793,10 @@ export default function MusicLayerV3() {
                             <span className="bms-wrow-name">{t.name}</span>
                             {t.analysing && <span className="bms-wrow-busy">Analysing…</span>}
                           </div>
-                          <WaveformSVG
-                            waveform={t.wave}
-                            progress={isActive && t.audioDuration ? pos / t.audioDuration : 0}
-                            color={t.color}
-                            height={rowH}
-                            dimmed={!isActive}
-                          />
+                          <WaveformSVG waveform={t.wave} progress={0} color={t.color} height={46} dimmed />
                         </div>
-                      );
-                    })
+                      ))}
+                    </>
                   )}
                 </div>
               )}
@@ -1345,20 +1869,11 @@ export default function MusicLayerV3() {
                             <button className="bms-rm" onClick={e => removeTrack(t.id, e)} aria-label={`Remove ${t.name}`}>×</button>
                           </div>
 
-                          <div className="bms-io">
-                            <span className="bms-io-lbl">in</span>
-                            <input className="bms-io-inp" placeholder="0s" inputMode="decimal"
-                              value={t.inPoint != null ? t.inPoint : ""}
-                              onChange={e => updateTrackIO(t.id, "inPoint", e.target.value)}
-                              onClick={e => e.stopPropagation()} />
-                            <span style={{ color: "#3A3A52" }}>→</span>
-                            <span className="bms-io-lbl">out</span>
-                            <input className="bms-io-inp" placeholder="end" inputMode="decimal"
-                              value={t.outPoint != null ? t.outPoint : ""}
-                              onChange={e => updateTrackIO(t.id, "outPoint", e.target.value)}
-                              onClick={e => e.stopPropagation()} />
-                            <span className="bms-io-lbl">sec</span>
-                          </div>
+                          {clipCounts[t.id] > 0 && (
+                            <div className="bms-io">
+                              {clipCounts[t.id]} clip{clipCounts[t.id] > 1 ? "s" : ""} on the timeline
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -1389,6 +1904,9 @@ export default function MusicLayerV3() {
                   <div className="bms-note">
                     Video is copied, not re-encoded — same resolution and quality.
                     Music is mixed under the original audio.
+                    {clips.length === 0
+                      ? " No clips placed, so the selected track runs from the top."
+                      : ` Exporting ${clips.length} placed clip${clips.length > 1 ? "s" : ""}.`}
                   </div>
                 )}
               </div>
