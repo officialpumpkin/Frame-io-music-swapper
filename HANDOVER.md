@@ -95,9 +95,14 @@ Modelled on a source monitor and a record timeline, because the old single-playh
 design meant scrubbing a 3-minute song was silently scrubbing a 30-second cut.
 
 **The dock is the source monitor.** The selected track plays on its own `<audio>` element
-with its own playhead (`srcPos`), so auditioning never moves the video. `A` plays, `I` and
-`O` mark in and out on the song, and the marks are stored per track (`srcIn` / `srcOut`)
-so switching tracks and coming back keeps your selection.
+with its own playhead (`srcPos`), so auditioning never moves the video. Clicking a waveform
+plays that track from the point clicked — a drag scrubs and plays from where you release.
+`I` and `O` mark in and out on the song, and the marks are stored per track (`srcIn` /
+`srcOut`) so switching tracks and coming back keeps your selection.
+
+There are two transports, and confusing them is the easy mistake: the play button over the
+video runs the *timeline*, the dock's "Play track" runs the *song*. The mark handles must
+stop `pointerup` propagating, or setting an in point would start playback as a side effect.
 
 **The lane under the play bar is the record timeline.** `Enter`, or "Add to timeline",
 places the marked region as a clip at the video playhead. A clip is

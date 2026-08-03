@@ -974,12 +974,13 @@ export default function MusicLayerV3() {
     }
   }, []);
 
-  const toggleSource = useCallback(() => {
-    const track = tracksRef.current.find(x => x.id === activeTrackIdRef.current);
+  // Start auditioning from a point in the song. `trackOverride` covers the case
+  // where the track is being selected in the same gesture and the ref that
+  // tracks the selection hasn't caught up yet.
+  const startSourceAt = useCallback((at, trackOverride = null) => {
+    const track = trackOverride || tracksRef.current.find(x => x.id === activeTrackIdRef.current);
     const a = srcAudioRef.current;
     if (!track || !a) return;
-
-    if (srcPlayingRef.current) { stopSource(); return; }
 
     // Auditioning and timeline playback are mutually exclusive.
     if (playingRef.current) {
@@ -988,12 +989,17 @@ export default function MusicLayerV3() {
       audioRef.current?.pause();
     }
 
+    const s = clamp(at, 0, track.audioDuration || 0);
+    setSrcPos(s);
+    srcPosRef.current = s;
+
     if (a.src !== track.url) a.src = track.url;
     a.volume = volRef.current;
-    seekAudioEl(a, srcPosRef.current);
+    seekAudioEl(a, s);
     a.play().catch(() => {});
     setSrcPlaying(true);
 
+    cancelAnimationFrame(srcRafRef.current);
     const tick = () => {
       const cur = srcAudioRef.current;
       if (!cur) return;
@@ -1007,7 +1013,12 @@ export default function MusicLayerV3() {
       srcRafRef.current = requestAnimationFrame(tick);
     };
     srcRafRef.current = requestAnimationFrame(tick);
-  }, [stopSource]);
+  }, []);
+
+  const toggleSource = useCallback(() => {
+    if (srcPlayingRef.current) { stopSource(); return; }
+    startSourceAt(srcPosRef.current);
+  }, [stopSource, startSourceAt]);
 
   useEffect(() => () => cancelAnimationFrame(srcRafRef.current), []);
 
@@ -1162,6 +1173,13 @@ export default function MusicLayerV3() {
     const at = srcPosFromEvent(e.clientX);
     if (at != null) setSourceMark(markDragRef.current, at);
   }, [srcPosFromEvent, setSourceMark]);
+
+  // Releasing a mark handle must not reach the waveform underneath, or setting
+  // an in point would start playback as a side effect.
+  const endMarkDrag = useCallback((e) => {
+    e.stopPropagation();
+    markDragRef.current = null;
+  }, []);
 
   // ── Full screen
   //
@@ -1332,18 +1350,19 @@ export default function MusicLayerV3() {
     }
   }, [stopSource]);
 
-  // Clicking a waveform row loads that track into the source monitor and moves
-  // the song's playhead. Picture is deliberately left alone.
+  // Clicking another track's waveform loads it into the source monitor and
+  // plays it from that point. Picture is deliberately left alone.
   const handleWaveformClick = useCallback((e, trackId) => {
-    const rect  = e.currentTarget.getBoundingClientRect();
+    const rect = e.currentTarget.getBoundingClientRect();
     if (!rect.width) return;
-    const frac  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const frac  = clamp((e.clientX - rect.left) / rect.width, 0, 1);
     const track = tracksRef.current.find(t => t.id === trackId);
-    const at    = frac * (track?.audioDuration || 0);
+    if (!track) return;
+    const at = frac * (track.audioDuration || 0);
 
-    if (trackId !== activeTrackIdRef.current) selectTrack(trackId, at);
-    else seekSource(at);
-  }, [selectTrack, seekSource]);
+    selectTrack(trackId, at);
+    startSourceAt(at, track);
+  }, [selectTrack, startSourceAt]);
 
   // ── Export the cut with the music arrangement mixed in
   const handleExport = useCallback(async () => {
@@ -1698,7 +1717,7 @@ export default function MusicLayerV3() {
                 </svg>
                 <span className="bms-dock-label">Source</span>
                 <span className="bms-count">{tracks.length || ""}</span>
-                <span className="bms-dock-hint">A to audition · I / O to mark · Enter to add</span>
+                <span className="bms-dock-hint">Click a waveform to play it · I / O to mark · Enter to add</span>
               </button>
 
               {dockOpen && (
@@ -1715,7 +1734,7 @@ export default function MusicLayerV3() {
                             {activeTrack.analysing
                               ? <span className="bms-wrow-busy">Analysing…</span>
                               : <span className="bms-src-tag">
-                                  click the waveform to move the song, then <b>Play track</b> — the video stays put
+                                  click the waveform to play from there — the video stays put
                                 </span>}
                           </div>
 
@@ -1731,6 +1750,12 @@ export default function MusicLayerV3() {
                               if (e.buttons !== 1 || markDragRef.current) return;
                               const at = srcPosFromEvent(e.clientX);
                               if (at != null) seekSource(at);
+                            }}
+                            // Play from wherever the pointer is released, so a
+                            // plain click starts there and a drag scrubs first.
+                            onPointerUp={e => {
+                              const at = srcPosFromEvent(e.clientX);
+                              startSourceAt(at != null ? at : srcPosRef.current);
                             }}
                           >
                             <WaveformSVG
@@ -1757,8 +1782,8 @@ export default function MusicLayerV3() {
                                   style={{ left: `${(srcIn / srcDur) * 100}%`, background: activeTrack.color }}
                                   onPointerDown={e => beginMarkDrag(e, "in")}
                                   onPointerMove={moveMarkDrag}
-                                  onPointerUp={() => { markDragRef.current = null; }}
-                                  onPointerCancel={() => { markDragRef.current = null; }}
+                                  onPointerUp={endMarkDrag}
+                                  onPointerCancel={endMarkDrag}
                                   title="Drag to set the in point"
                                 />
                                 <div
@@ -1766,8 +1791,8 @@ export default function MusicLayerV3() {
                                   style={{ left: `${(srcOut / srcDur) * 100}%`, background: activeTrack.color }}
                                   onPointerDown={e => beginMarkDrag(e, "out")}
                                   onPointerMove={moveMarkDrag}
-                                  onPointerUp={() => { markDragRef.current = null; }}
-                                  onPointerCancel={() => { markDragRef.current = null; }}
+                                  onPointerUp={endMarkDrag}
+                                  onPointerCancel={endMarkDrag}
                                   title="Drag to set the out point"
                                 />
                                 <div className="bms-src-playhead" style={{ left: `${(srcPos / srcDur) * 100}%` }} />
