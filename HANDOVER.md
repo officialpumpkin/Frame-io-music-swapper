@@ -67,6 +67,21 @@ viewport (URL bar retracted), so in portrait the bottom of the app hides under b
 chrome. Use `height:100dvh` and anchor bottom-docked panels with `position:absolute`
 inside the app box, not `fixed`.
 
+**A stale closure froze the playhead for months.** The `timeupdate` handler was gated on
+`playing` captured from the render where the asset loaded — the effect is keyed on the
+asset URL, so that value was always `false` and `posRef` never advanced during playback.
+The transport clock sat at `00:00:00` through an entire 60-second play-through. It broke
+everything downstream that asks where the cut is: clips were placed at 0 instead of at the
+playhead, arrow-key seeks started from 0, the scrubber never moved, and the routing pass
+keyed on `pos` never fired, so music never re-cued at a clip boundary. Read `playingRef`
+inside handlers registered by asset-keyed effects. **`react-hooks/exhaustive-deps` had been
+warning about exactly this and it was carried as a known-benign warning — it wasn't.**
+
+**`posRef` is only as fresh as `timeupdate`,** which fires about four times a second.
+Anything that has to land on the frame — placing a clip, swapping songs mid-play — reads
+`timelineNow()`, which asks the video element directly. Using `posRef` put swaps up to
+0.27s out; measured 0.037s after.
+
 **Testing in this environment.** Browser automation runs in a backgrounded tab, so video
 never loads metadata, CSS transitions stall mid-interpolation, and media requests never
 progress. None of that indicates a real bug. Rendering the app in an iframe gives working
@@ -147,6 +162,18 @@ Verified against the real asset (`https://f.io/b0ztdShu` → J26024 Souvenaid, 1
 30.04s): export produced a valid 1920×1080 / 30.0s / avc1+mp4a file, with the music
 measurably present (440 Hz at 0.1604 during, 0.0002 after it ends) and the original audio
 still there (RMS 0.0752 after the music stops).
+
+Playback was verified with real media against `https://f.io/xBPEGDdI` (J26022 Carrera,
+60.04s), measuring `currentTime` on the media elements at the event rather than after a
+tool round-trip — the round-trip alone is ~10s and will otherwise read as an offset:
+
+| | expected | measured |
+|---|---|---|
+| Click a waveform at 25% of a 115.7s track | 28.93s | 28.974s (video stayed paused at 0) |
+| Music enters at a clip starting 9.22s in, in-point 40.0s | 40.24s | 40.236s |
+| Sync 13s into that clip | 53.28s | 53.24s |
+| Swap songs mid-playback | 58.693s | 58.656s (video never paused) |
+| Drag a 110s clip across a 60.04s cut | +9.22s | +9.22s |
 
 ## Open items
 
