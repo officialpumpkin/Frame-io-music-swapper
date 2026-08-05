@@ -831,8 +831,11 @@ export default function MusicLayerV3() {
     v.src = currentAsset.url;
     v.crossOrigin = "anonymous";
     const onMeta = () => setDur(v.duration || 0);
+    // Read through the ref, not the captured value: this effect is keyed on the
+    // asset, so a `playing` closed over here would still be false from when the
+    // video loaded — and the playhead would never advance during playback.
     const onTime = () => {
-      if (!playing) return;
+      if (!playingRef.current) return;
       posRef.current = v.currentTime;
       setPos(v.currentTime);
     };
