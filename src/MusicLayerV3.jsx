@@ -521,6 +521,28 @@ const CSS = `
 }
 .bms-lane-hint { margin-top:5px; font-size:9.5px; color:rgba(232,232,242,.5); }
 
+/* ── A/B row ─────────────────────────────────────────────────────────────────
+   Comparing songs against the same cut is the job, so this sits on the
+   transport rather than behind the drawer, and stays put while picture rolls. */
+.bms-ab { display:flex; align-items:center; gap:5px; margin-top:7px; flex-wrap:wrap; }
+.bms-ab-label {
+  font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+  color:rgba(232,232,242,.45); font-weight:600; margin-right:2px;
+}
+.bms-ab-chip {
+  display:flex; align-items:center; gap:5px; max-width:190px;
+  background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.1);
+  color:#BFBFD6; border-radius:999px; padding:4px 10px 4px 6px;
+  font-size:10px; font-weight:500; cursor:pointer; white-space:nowrap;
+}
+.bms-ab-chip:hover { background:rgba(255,255,255,.1); color:var(--text); }
+.bms-ab-chip.on { font-weight:600; }
+.bms-ab-key {
+  display:grid; place-items:center; width:14px; height:14px; flex-shrink:0;
+  border-radius:4px; background:rgba(0,0,0,.35); font-size:8.5px; opacity:.75;
+}
+.bms-ab-name { overflow:hidden; text-overflow:ellipsis; }
+
 /* ── Source monitor ──────────────────────────────────────────────────────────
    The selected track on its own transport: scrubbing and playing here move the
    song only, so you can find a section without disturbing the picture. */
@@ -626,6 +648,11 @@ const CSS = `
   .bms-src-handle { width:18px; margin-left:-9px; opacity:.4; }
   .bms-clip-edge { width:14px; }
   .bms-lane { height:30px; }
+  /* Scroll rather than wrap: a long track list would otherwise push the
+     transport off a phone screen. */
+  .bms-ab { flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; }
+  .bms-ab::-webkit-scrollbar { display:none; }
+  .bms-ab-chip { flex-shrink:0; max-width:140px; }
 }
 
 /* The full lockup fits at 360px (a very common Android width); only below it
@@ -1093,7 +1120,7 @@ export default function MusicLayerV3() {
     setClips(prev => {
       const next = prev.map(c => {
         if (c.id !== id) return c;
-        const limit = Math.max(0, (durRef.current || 0) - c.duration);
+        const limit = Math.max(0, (durRef.current || 0) - 0.1);
         return { ...c, start: Math.max(0, Math.min(c.start + deltaSec, limit)) };
       });
       const moved = next.find(c => c.id === id);
@@ -1109,8 +1136,9 @@ export default function MusicLayerV3() {
     e.currentTarget.setPointerCapture(e.pointerId);
     setSelectedClipId(clip.id);
     clipDragRef.current = {
-      id: clip.id, mode, x: e.clientX,
+      id: clip.id, mode, x: e.clientX, trackId: clip.trackId,
       start: clip.start, duration: clip.duration, sourceIn: clip.sourceIn,
+      last: clip,
     };
   }, []);
 
@@ -1123,24 +1151,31 @@ export default function MusicLayerV3() {
     if (!width || !total) return;
     const delta = ((e.clientX - d.x) / width) * total;
 
-    setClips(prev => prev.map(c => {
-      if (c.id !== d.id) return c;
-
-      if (d.mode === "move") {
-        return { ...c, start: clamp(d.start + delta, 0, Math.max(0, total - c.duration)) };
-      }
-
-      if (d.mode === "in") {
-        // Trimming the head moves the source in-point with it, so the music
-        // that was lined up against picture stays lined up.
-        const shift = clamp(delta, -Math.min(d.start, d.sourceIn), d.duration - 0.1);
-        return { ...c, start: d.start + shift, sourceIn: d.sourceIn + shift, duration: d.duration - shift };
-      }
-
-      const track = tracksRef.current.find(t => t.id === c.trackId);
+    // Computed here rather than inside the updater: the updater does not run
+    // until React renders, so pointerup would otherwise read a stale clip.
+    const base = { id: d.id, trackId: d.trackId };
+    let next;
+    if (d.mode === "move") {
+      // Anywhere in the cut. Clamping to `total - duration` would pin a clip
+      // longer than the picture at zero, which is the common case: marking an
+      // in point alone leaves the out at the end of the song.
+      next = { ...base, start: clamp(d.start + delta, 0, Math.max(0, total - 0.1)),
+               sourceIn: d.sourceIn, duration: d.duration };
+    } else if (d.mode === "in") {
+      // Trimming the head moves the source in-point with it, so the music that
+      // was lined up against picture stays lined up.
+      const shift = clamp(delta, -Math.min(d.start, d.sourceIn), d.duration - 0.1);
+      next = { ...base, start: d.start + shift, sourceIn: d.sourceIn + shift,
+               duration: d.duration - shift };
+    } else {
+      const track = tracksRef.current.find(t => t.id === d.trackId);
       const room  = (track?.audioDuration || Infinity) - d.sourceIn;
-      return { ...c, duration: clamp(d.duration + delta, 0.1, Math.min(room, total - d.start)) };
-    }));
+      next = { ...base, start: d.start, sourceIn: d.sourceIn,
+               duration: clamp(d.duration + delta, 0.1, Math.min(room, total - d.start)) };
+    }
+
+    d.last = next;
+    setClips(prev => prev.map(c => (c.id === d.id ? { ...c, ...next } : c)));
   }, []);
 
   const endClipDrag = useCallback(() => {
@@ -1148,7 +1183,7 @@ export default function MusicLayerV3() {
     clipDragRef.current = null;
     if (!d) return;
     if (audioRef.current) delete audioRef.current.dataset.clipId;
-    const moved = clipsRef.current.find(c => c.id === d.id);
+    const moved = d.last || clipsRef.current.find(c => c.id === d.id);
     if (moved) setNudgeHint(`Starts at ${fmt(moved.start, DISPLAY_FPS)}`);
   }, []);
 
@@ -1212,7 +1247,9 @@ export default function MusicLayerV3() {
     setChromeHidden(false);
     clearTimeout(hideTimerRef.current);
     hideTimerRef.current = setTimeout(() => {
-      if (playingRef.current) setChromeHidden(true);
+      // Once music is placed the transport is a working surface, not chrome —
+      // hiding it takes the clip lane and the A/B row away mid-audition.
+      if (playingRef.current && !clipsRef.current.length) setChromeHidden(true);
     }, 2600);
   }, []);
 
@@ -1225,6 +1262,97 @@ export default function MusicLayerV3() {
     const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     seekTo(fraction * (durRef.current || 0));
   }, [seekTo]);
+
+  // ── Choosing which song you are working with
+  //
+  // Loading a track into the source monitor. The timeline playhead stays where
+  // it is — swapping which song you are auditioning must not move picture.
+  const selectTrack = useCallback((id, overrideSrcPos = null) => {
+    const newTrack = tracksRef.current.find(x => x.id === id);
+    if (!newTrack) return;
+
+    const changing = id !== activeTrackIdRef.current;
+    if (changing) stopSource();
+
+    const at = overrideSrcPos !== null
+      ? overrideSrcPos
+      : (changing ? (newTrack.srcIn ?? 0) : srcPosRef.current);
+
+    setActiveTrackId(id);
+    setSrcPos(at);
+    srcPosRef.current = at;
+
+    const a = srcAudioRef.current;
+    if (a) {
+      if (a.src !== newTrack.url) a.src = newTrack.url;
+      a.volume = volRef.current;
+      seekAudioEl(a, at);
+      if (srcPlayingRef.current) a.play().catch(() => {});
+    }
+  }, [stopSource]);
+
+  // Put a different song under the picture. This is the A/B move the tool
+  // exists for, so it holds everything else still: the clip keeps its position,
+  // its length and how far into the song it starts, and only the song changes
+  // underneath it. It works mid-playback — picture never stops.
+  const chooseTrack = useCallback((id) => {
+    const track = tracksRef.current.find(t => t.id === id);
+    if (!track) return;
+
+    // The clip being worked on: the selected one, else whatever is under the
+    // playhead, else the only one there is.
+    const list = clipsRef.current;
+    const target =
+      list.find(c => c.id === selectedClipId) ||
+      clipAt(posRef.current, list) ||
+      (list.length === 1 ? list[0] : null);
+
+    let swapped = null;
+    // Guarded on the clip's own track, not the active one: picking a song you
+    // happen to be auditioning must still put it under the picture.
+    if (target && target.trackId !== id) {
+      const room = Math.max(0, (track.audioDuration || 0) - 0.1);
+      swapped = { ...target, trackId: id, sourceIn: Math.min(target.sourceIn, room) };
+      setClips(prev => prev.map(c => (c.id === target.id ? swapped : c)));
+      setSelectedClipId(target.id);
+      setNudgeHint(`${track.name} — same spot, same length`);
+    }
+
+    selectTrack(id);
+
+    // Re-cue immediately rather than waiting for the routing pass, so the swap
+    // is heard on the beat you asked for it rather than up to a frame later.
+    if (playingRef.current) {
+      const a = audioRef.current;
+      if (a) {
+        const at = swapped
+          ? swapped.sourceIn + (posRef.current - swapped.start)
+          : posRef.current;
+        a.dataset.clipId = String(swapped ? swapped.id : null);
+        a.src            = track.url;
+        a.volume         = volRef.current;
+        seekAudioEl(a, clamp(at, 0, track.audioDuration || 0));
+        a.play().catch(() => {});
+      }
+    }
+  }, [selectTrack, clipAt, selectedClipId]);
+
+  // Clicking another track's waveform auditions it from that point. If picture
+  // is rolling, it swaps under the cut instead — you asked to hear the
+  // alternative against the edit, not on its own.
+  const handleWaveformClick = useCallback((e, trackId) => {
+    if (playingRef.current) { chooseTrack(trackId); return; }
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (!rect.width) return;
+    const frac  = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+    const track = tracksRef.current.find(t => t.id === trackId);
+    if (!track) return;
+    const at = frac * (track.audioDuration || 0);
+
+    selectTrack(trackId, at);
+    startSourceAt(at, track);
+  }, [selectTrack, startSourceAt, chooseTrack]);
 
   // ── Keyboard shortcuts
   useEffect(() => {
@@ -1243,6 +1371,15 @@ export default function MusicLayerV3() {
         return;
       }
 
+      // 1–9 swap songs. The point of the tool is hearing the alternative, so
+      // this is a single keystroke and works while the cut is running.
+      const digit = /^Digit([1-9])$/.exec(e.code);
+      if (digit) {
+        const track = tracksRef.current[Number(digit[1]) - 1];
+        if (track) { e.preventDefault(); chooseTrack(track.id); wakeChrome(); }
+        return;
+      }
+
       if (e.code === "Space")  { e.preventDefault(); handlePlay(); wakeChrome(); }
       if (e.code === "KeyF")   { e.preventDefault(); toggleFullscreen(); }
       if (e.code === "KeyA")   { e.preventDefault(); toggleSource(); }
@@ -1257,7 +1394,7 @@ export default function MusicLayerV3() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [handlePlay, toggleFullscreen, wakeChrome, toggleSource, markSource,
-      addToTimeline, selectedClipId, nudgeClip, removeClip, seekTo]);
+      addToTimeline, selectedClipId, nudgeClip, removeClip, seekTo, chooseTrack]);
 
   // ── Track file handling
   const handleFiles = useCallback((files) => {
@@ -1323,46 +1460,6 @@ export default function MusicLayerV3() {
       return next;
     });
   }, [stopSource]);
-
-  // Loading a track into the source monitor. The timeline playhead stays where
-  // it is — swapping which song you are auditioning must not move picture.
-  const selectTrack = useCallback((id, overrideSrcPos = null) => {
-    const newTrack = tracksRef.current.find(x => x.id === id);
-    if (!newTrack) return;
-
-    const changing = id !== activeTrackIdRef.current;
-    if (changing) stopSource();
-
-    const at = overrideSrcPos !== null
-      ? overrideSrcPos
-      : (changing ? (newTrack.srcIn ?? 0) : srcPosRef.current);
-
-    setActiveTrackId(id);
-    setSrcPos(at);
-    srcPosRef.current = at;
-
-    const a = srcAudioRef.current;
-    if (a) {
-      if (a.src !== newTrack.url) a.src = newTrack.url;
-      a.volume = volRef.current;
-      seekAudioEl(a, at);
-      if (srcPlayingRef.current) a.play().catch(() => {});
-    }
-  }, [stopSource]);
-
-  // Clicking another track's waveform loads it into the source monitor and
-  // plays it from that point. Picture is deliberately left alone.
-  const handleWaveformClick = useCallback((e, trackId) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    if (!rect.width) return;
-    const frac  = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-    const track = tracksRef.current.find(t => t.id === trackId);
-    if (!track) return;
-    const at = frac * (track.audioDuration || 0);
-
-    selectTrack(trackId, at);
-    startSourceAt(at, track);
-  }, [selectTrack, startSourceAt]);
 
   // ── Export the cut with the music arrangement mixed in
   const handleExport = useCallback(async () => {
@@ -1656,8 +1753,31 @@ export default function MusicLayerV3() {
                   </div>
                 )}
 
-                {clips.length > 0 && nudgeHint && (
-                  <div className="bms-lane-hint mono">{nudgeHint}</div>
+                {clips.length > 0 && (
+                  <div className="bms-lane-hint mono">
+                    {nudgeHint || "Drag the clip to move it · edges to trim · ← → to nudge"}
+                  </div>
+                )}
+
+                {/* A/B row: swap the song under the cut without losing the timing */}
+                {tracks.length > 0 && (
+                  <div className="bms-ab">
+                    <span className="bms-ab-label">Music</span>
+                    {tracks.map((t, i) => (
+                      <button
+                        key={t.id}
+                        className={`bms-ab-chip${t.id === activeTrackId ? " on" : ""}`}
+                        style={t.id === activeTrackId
+                          ? { borderColor: t.color, color: t.color, background: `${t.color}1F` }
+                          : undefined}
+                        onClick={() => { chooseTrack(t.id); wakeChrome(); }}
+                        title={`Put "${t.name}" under the cut (${i + 1})`}
+                      >
+                        {i < 9 && <span className="bms-ab-key mono">{i + 1}</span>}
+                        <span className="bms-ab-name">{t.name}</span>
+                      </button>
+                    ))}
+                  </div>
                 )}
 
                 <div className="bms-transport">
@@ -1717,7 +1837,7 @@ export default function MusicLayerV3() {
                 </svg>
                 <span className="bms-dock-label">Source</span>
                 <span className="bms-count">{tracks.length || ""}</span>
-                <span className="bms-dock-hint">Click a waveform to play it · I / O to mark · Enter to add</span>
+                <span className="bms-dock-hint">1–9 swap songs · click a waveform to play it · I / O to mark · Enter to add</span>
               </button>
 
               {dockOpen && (

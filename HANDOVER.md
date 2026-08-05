@@ -111,6 +111,30 @@ starts, and how long it runs. Drag the body to slide it, drag an edge to trim, o
 with `←` / `→` (one frame, or a second with shift). Trimming the head advances `sourceIn`
 by the same amount, so music already lined up against picture stays lined up.
 
+**A clip may be longer than the picture, and usually is.** Marking only an in point leaves
+the out at the end of the song, so a 3-minute track against a 30-second cut makes a clip
+six times the width of the cut. `start` is therefore clamped to the *cut*
+(`0 … videoDur - 0.1`), never to `videoDur - clipDuration` — that older clamp collapsed to
+`clamp(start, 0, 0)` and pinned every such clip at zero, unmovable by drag or arrow key.
+Overhang is fine; `renderMusicMix` truncates at the end of the video.
+
+**Swapping songs is the point of the tool, so it is one keystroke.** `1`–`9`, or the chips
+on the transport, put a different track under the cut: the clip keeps its position, length
+and `sourceIn`, and only `trackId` changes. It works mid-playback — picture never stops,
+and the music element is re-cued immediately rather than waiting for the routing pass.
+Clicking another waveform while the cut is rolling swaps rather than auditioning, on the
+grounds that you asked to hear the alternative *against the edit*. The swap is guarded on
+the clip's own track rather than the active one, so picking a song you happen to be
+auditioning still places it. The transport also stops auto-hiding once clips exist — it is
+a working surface at that point, and hiding it takes the lane and the chips away
+mid-audition.
+
+**Drag state is computed outside the `setClips` updater.** `pointerup` fires before React
+flushes `pointermove`'s update, so reading `clipsRef` in `endClipDrag` reports the
+pre-drag position. The drag record carries the computed clip instead. (Writing it from
+inside the updater does not work either — same flush timing, and it is not StrictMode
+safe.)
+
 **With no clips placed, nothing changed** — the selected track runs from the top, which is
 the path that was already working. `renderMusicMix` keeps that as its fallback.
 
