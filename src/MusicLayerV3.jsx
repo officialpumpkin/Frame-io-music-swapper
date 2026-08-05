@@ -963,6 +963,14 @@ export default function MusicLayerV3() {
     }
   }, [Math.floor(pos * 4), playing, clips.length, timelineCueAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Where the cut actually is, right now. `posRef` only refreshes on timeupdate,
+  // which fires about four times a second, so anything that has to land on the
+  // frame — placing a clip, swapping songs mid-play — asks the video instead.
+  const timelineNow = useCallback(() => {
+    const v = videoRef.current;
+    return v && v.readyState >= 1 && isFinite(v.currentTime) ? v.currentTime : posRef.current;
+  }, []);
+
   // ── Seek (timeline)
   const seekTo = useCallback((t) => {
     const s = Math.max(0, Math.min(t, durRef.current || 300));
@@ -1100,14 +1108,14 @@ export default function MusicLayerV3() {
     if (len <= 0.05) return;
 
     const videoDur = durRef.current || 0;
-    const start    = Math.max(0, Math.min(posRef.current, Math.max(0, videoDur - 0.05)));
+    const start    = Math.max(0, Math.min(timelineNow(), Math.max(0, videoDur - 0.05)));
     const clip = { id: uid(), trackId: track.id, start, sourceIn: from, duration: len };
 
     stopSource();
     setClips(prev => [...prev, clip].sort((a, b) => a.start - b.start));
     setSelectedClipId(clip.id);
     setNudgeHint(`Added at ${fmt(start, DISPLAY_FPS)} — drag or use ← → to line it up`);
-  }, [stopSource]);
+  }, [stopSource, timelineNow]);
 
   const removeClip = useCallback((id) => {
     setClips(prev => prev.filter(c => c.id !== id));
@@ -1304,10 +1312,11 @@ export default function MusicLayerV3() {
 
     // The clip being worked on: the selected one, else whatever is under the
     // playhead, else the only one there is.
+    const at   = timelineNow();
     const list = clipsRef.current;
     const target =
       list.find(c => c.id === selectedClipId) ||
-      clipAt(posRef.current, list) ||
+      clipAt(at, list) ||
       (list.length === 1 ? list[0] : null);
 
     let swapped = null;
@@ -1328,17 +1337,15 @@ export default function MusicLayerV3() {
     if (playingRef.current) {
       const a = audioRef.current;
       if (a) {
-        const at = swapped
-          ? swapped.sourceIn + (posRef.current - swapped.start)
-          : posRef.current;
+        const into = swapped ? swapped.sourceIn + (at - swapped.start) : at;
         a.dataset.clipId = String(swapped ? swapped.id : null);
         a.src            = track.url;
         a.volume         = volRef.current;
-        seekAudioEl(a, clamp(at, 0, track.audioDuration || 0));
+        seekAudioEl(a, clamp(into, 0, track.audioDuration || 0));
         a.play().catch(() => {});
       }
     }
-  }, [selectTrack, clipAt, selectedClipId]);
+  }, [selectTrack, clipAt, selectedClipId, timelineNow]);
 
   // Clicking another track's waveform auditions it from that point. If picture
   // is rolling, it swaps under the cut instead — you asked to hear the
