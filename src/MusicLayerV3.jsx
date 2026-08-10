@@ -43,13 +43,13 @@ const unwrap = (r) => (r && typeof r === "object" && "data" in r ? r.data : r);
 const MEDIA_INCLUDE =
   "include=media_links.original,media_links.efficient,media_links.thumbnail";
 
+// These are the only calls the proxy will forward — see api/frameio/[...path].js.
+// Adding one here without widening the allowlist there will 404.
 const FIO = {
-  me:          (t)                              => apiRequest(t, "GET",  "/me").then(unwrap),
   accounts:    (t)                              => apiRequest(t, "GET",  "/accounts").then(unwrap),
   // V4: assets → files, account_id required in every path
   asset:       (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/files/${id}?${MEDIA_INCLUDE}`).then(unwrap),
   children:    (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/files/${id}/children?type=file&page=1&page_size=40&${MEDIA_INCLUDE}`).then(unwrap),
-  reviewLink:  (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/review_links/${id}`).then(unwrap),
 };
 
 // Parse any Frame.io URL and return { type, id }
@@ -90,13 +90,10 @@ async function resolveURL(token, accountId, url) {
   if (!parsed) throw new Error("Couldn't find a Frame.io asset ID in that URL.");
 
   if (parsed.type === "review_link") {
-    const link = await FIO.reviewLink(token, accountId, parsed.id);
-    // V4 may wrap items differently
-    const items = link.items || link.assets || link.data || [];
-    const videos = items.filter(a => a.type === "file" || a.item_type === "file");
-    if (videos.length === 1) return { type: "video", asset: videos[0] };
-    if (videos.length > 1)  return { type: "folder", assets: videos, folderName: link.name || "Review Link" };
-    throw new Error("This review link contains no video assets.");
+    // V4 replaced review links with shares, so the ID in a /reviews/ or
+    // /presentations/ URL names no file the API can fetch. This never resolved;
+    // say what to paste instead of surfacing an upstream 404.
+    throw new Error("That's a review or presentation link. Open it in Frame.io, click the video, and paste the link from that page.");
   }
 
   const asset = await FIO.asset(token, accountId, parsed.id);
@@ -782,7 +779,7 @@ export default function MusicLayerV3() {
         console.warn("Music Layer: account_id fetch failed —", e.message);
       }
     })();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Resolve Frame.io URL
   const handleResolve = useCallback(async () => {
@@ -926,8 +923,9 @@ export default function MusicLayerV3() {
   useEffect(() => {
     if (currentAsset) return;
     if (playing) {
+      // posRef is already at the play position — handlePlay and seekTo both set
+      // it. Reading `pos` here instead would restart this loop every frame.
       startRef.current = performance.now();
-      posRef.current   = pos;
       const tick = () => {
         const next   = posRef.current + (performance.now() - startRef.current) / 1000;
         const maxDur = durRef.current || 300;

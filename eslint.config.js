@@ -18,4 +18,11 @@ export default defineConfig([
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
   },
+  {
+    // api/ runs on Vercel's Node runtime, not in the browser. Without this,
+    // every process.env read is a false "'process' is not defined" error, and
+    // real findings get lost in the noise.
+    files: ['api/**/*.js'],
+    languageOptions: { globals: globals.node },
+  },
 ])
