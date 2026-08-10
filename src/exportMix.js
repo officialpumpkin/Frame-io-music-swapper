@@ -106,27 +106,32 @@ export function readMp4Info(bytes) {
 
 // ─── Music arrangement → PCM ──────────────────────────────────────────────────
 
-// Render the arrangement offline, mirroring how playback routes tracks: when any
-// in/out points are set the tracks play across their own spans, otherwise the
-// selected track plays from the top.
-export async function renderMusicMix({ tracks, activeTrackId, durationSec, volume = 1, sampleRate = 48000 }) {
+// Render the arrangement offline, mirroring how playback routes audio: placed
+// clips map a marked region of a song onto a span of picture. With no clips
+// placed the selected track simply runs from the top.
+export async function renderMusicMix({ tracks, clips = [], activeTrackId, durationSec, volume = 1, sampleRate = 48000 }) {
   const usable = tracks.filter(t => t.url);
   if (!usable.length) throw new Error("Add at least one music track before exporting.");
   if (!durationSec || !isFinite(durationSec) || durationSec <= 0) {
     throw new Error("The video duration isn't known yet — let it load, then export.");
   }
 
-  const hasArrangement = usable.some(t => t.inPoint != null || t.outPoint != null);
-  const scheduled = hasArrangement
-    ? usable.map(t => ({
-        track: t,
-        start: Math.max(0, t.inPoint ?? 0),
-        end:   Math.min(t.outPoint ?? durationSec, durationSec),
+  const placed = clips
+    .map(c => ({ clip: c, track: usable.find(t => t.id === c.trackId) }))
+    .filter(x => x.track);
+
+  const scheduled = placed.length
+    ? placed.map(({ clip, track }) => ({
+        track,
+        start:    Math.max(0, clip.start),
+        end:      Math.min(clip.start + clip.duration, durationSec),
+        sourceIn: Math.max(0, clip.sourceIn || 0),
       }))
     : [{
-        track: usable.find(t => t.id === activeTrackId) || usable[0],
-        start: 0,
-        end:   durationSec,
+        track:    usable.find(t => t.id === activeTrackId) || usable[0],
+        start:    0,
+        end:      durationSec,
+        sourceIn: 0,
       }];
 
   const ctx = new OfflineAudioContext(2, Math.ceil(durationSec * sampleRate), sampleRate);
@@ -146,8 +151,10 @@ export async function renderMusicMix({ tracks, activeTrackId, durationSec, volum
     const src = ctx.createBufferSource();
     src.buffer = buffer;
     src.connect(master);
-    const offset = Math.max(0, s.track.audioOffset ?? 0);
-    src.start(s.start, offset, s.end - s.start);
+    // Play from `sourceIn` seconds into the song, for as long as the clip
+    // occupies the timeline — no more of the song than was marked.
+    const offset = Math.min(Math.max(0, s.sourceIn), Math.max(0, buffer.duration - 0.01));
+    src.start(s.start, offset, Math.min(s.end - s.start, buffer.duration - offset));
   }
 
   return ctx.startRendering();
@@ -200,6 +207,7 @@ export function exportFileName(sourceName) {
 export async function exportWithMusic({
   videoUrl,
   tracks,
+  clips = [],
   activeTrackId,
   volume = 1,
   durationSec,
@@ -215,7 +223,7 @@ export async function exportWithMusic({
   const length = info.durationSec || durationSec;
 
   onPhase({ phase: "Rendering music", progress: 0 });
-  const mix = await renderMusicMix({ tracks, activeTrackId, durationSec: length, volume });
+  const mix = await renderMusicMix({ tracks, clips, activeTrackId, durationSec: length, volume });
   const wavBytes = audioBufferToWav(mix);
 
   onPhase({ phase: "Loading encoder", progress: 0 });
