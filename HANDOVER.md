@@ -1,6 +1,7 @@
 # Brightworks Music Swapper — Handover
 
-_Last updated: 3 August 2026. Repo: `officialpumpkin/Frame-io-music-swapper`, branch `main` @ `bc661b5`._
+_Last updated: 10 August 2026. Repo: `officialpumpkin/Frame-io-music-swapper`. Current work
+is on branch `spotting`, not yet merged — `main` @ `bc661b5` is what production serves._
 
 ## What it is
 
@@ -17,6 +18,7 @@ npm install
 npm run dev      # UI only: /api/* 404s locally, so no Frame.io and no export
 npm run build
 npm run lint
+npm test        # proxy allowlist
 ```
 
 There is no local API. The serverless functions only exist when deployed, so anything
@@ -177,15 +179,29 @@ tool round-trip — the round-trip alone is ~10s and will otherwise read as an o
 
 ## Open items
 
-**Security — decide before sharing the link.** The proxy authenticates with Brightworks'
-own `FRAMEIO_TOKEN` and ignores whatever the client sends, and production is public. An
-unauthenticated request to `/api/frameio/accounts` returns real account data — verified.
-Anyone with the URL is effectively operating as Brightworks against the Frame.io account
-and can pull originals. Options discussed:
-- Shared passcode: one env var, checked in the proxy, entered once in the UI. No accounts
-  for the client. ~30 min. **This was the leading option.**
-- Restrict the proxy to a single Frame.io project.
-- Vercel password protection (needs a Pro plan).
+**Security — the proxy is now an allowlist. Production still isn't.** The token is
+account-wide and cannot be narrowed: Frame.io V4 ignores the resource scopes you tick when
+minting a developer token (per Frame.io staff, those are V2-legacy only), and scoping by
+user would mean provisioning a Frame.io user per job. So containment lives in
+`api/frameio/[...path].js`, which forwards GET on two shapes only —
+`accounts/<account>/files/<uuid>` and `…/children` — under this deployment's own account.
+`/accounts` is answered locally from a cached ID so the listing is never proxied. With no
+listing, no search and no enumeration, reaching the proxy grants no more than the link the
+client already had. `npm test` asserts each refusal never reaches Frame.io.
+
+The wildcard `Access-Control-Allow-Origin` is gone too; it let any page on the internet
+script the proxy through a visitor's browser. Set `ALLOWED_ORIGIN` only if the front end
+moves off this origin. `api/expand.js` was a server-side request forgery — it fetched any
+URL given to it — and is now allowlisted to Frame.io hosts over https, both on the request
+and on the redirect it lands on.
+
+**This is on `spotting`. `main` — which is what production serves — still has the open
+proxy**, so until this merges, `https://frame-io-music-swapper.vercel.app` will accept any
+V4 path and any method with Brightworks' token.
+
+Still open, and now cheaper to judge: a shared passcode (one env var, entered once in the
+UI) would stop casual access by URL, but a client-side secret leaks the moment a client
+forwards the link. The allowlist holds regardless, which is why it came first.
 
 **Custom domain** — e.g. `music.brightworks.com.au`, so clients never see Vercel. Andy adds
 the DNS record; the Vercel side is quick.
@@ -199,11 +215,19 @@ still clipped, the fallback is driving layout from the `visualViewport` API.
 tests (see below) but only a single whole-track export has been rendered through ffmpeg
 end-to-end and inspected.
 
-**`review_links` is not a V4 endpoint.** V4 replaced review links with shares. Your share
-link works because it resolves via the trailing file ID, but a bare `/share/{id}` URL with
-no `/view/` segment would fail.
+**A bare share link cannot be resolved, and this is Frame.io's gap, not ours.** `f.io`
+shortlinks expand to `next.frame.io/share/{shareId}/` with no `/view/` segment, so the only
+UUID in the URL is the *share* ID. Asking for it as a file gets `Entity with ID … not
+found` — verified identical on the locked-down proxy and on production's unrestricted one,
+so it is not a side effect of the allowlist. V4 offers
+`/accounts/{id}/shares/{share_id}` for the share entity but has **no endpoint that lists
+the files inside a share**; V2's `/review_links/{id}/items/shared` was never replaced.
+Paste a link that names the file — open the share, click the video, copy that URL. The
+failure currently surfaces in the UI as a bare `404`, which is worth improving.
 
-**Minor:** `README.md` is still the stock Vite template. `npm run lint` has one
-pre-existing error (`'process' is not defined` in the API file — it's Node, the lint config
-just doesn't know). `npm audit` flags dev-only deps (vite/babel/postcss). Branch
-`fix/frameio-proxy-path` is merged but not deleted.
+**Minor:** `README.md` is still the stock Vite template. `npm audit` flags dev-only deps
+(vite/babel/postcss). Branch `fix/frameio-proxy-path` is merged but not deleted.
+
+`npm run lint` is clean — 0 errors, 0 warnings. Keep it that way. The playhead bug above
+sat in plain sight as an exhaustive-deps warning while the warning count was treated as
+background noise.
