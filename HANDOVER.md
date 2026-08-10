@@ -85,8 +85,11 @@ Anything that has to land on the frame — placing a clip, swapping songs mid-pl
 0.27s out; measured 0.037s after.
 
 **Testing in this environment.** Browser automation runs in a backgrounded tab, so video
-never loads metadata, CSS transitions stall mid-interpolation, and media requests never
-progress. None of that indicates a real bug. Rendering the app in an iframe gives working
+never loads metadata, CSS transitions stall mid-interpolation, media requests never
+progress, and **`requestAnimationFrame` does not fire at all** — a one-second rAF counter
+times out after 45s. Anything driven by rAF (music-only playback, the smooth playhead)
+therefore looks frozen for reasons that have nothing to do with the code. Assert on the
+mapping instead: set the playhead, read the rendered position, check the arithmetic. None of that indicates a real bug. Rendering the app in an iframe gives working
 media queries; iframes cannot reproduce the mobile URL-bar discrepancy because `dvh` and
 `vh` are identical there.
 
@@ -145,6 +148,36 @@ the clip's own track rather than the active one, so picking a song you happen to
 auditioning still places it. The transport also stops auto-hiding once clips exist — it is
 a working surface at that point, and hiding it takes the lane and the chips away
 mid-audition.
+
+**Colour is the track identity, not text.** The name used to appear six times — over
+the video, inside the clip, in the hint line, on an A/B chip row, in the source header and
+in the drawer. It now appears once, in the drawer. A clip, its waveform and its drawer row
+share a per-track colour, and that carries the identity instead. The A/B chip row went with
+it, so `1`–`9` is only discoverable from the number badges on the drawer rows and the dock
+hint — if you add another way to swap songs, keep one of those visible. Transient feedback
+("Starts at…", "Marker at…") reuses the dock hint line rather than adding a row.
+
+**Markers are cue points in the cut, and clips snap to them.** `M` drops one at the
+playhead and `M` again on top of it removes it; `Shift+M` clears them all. They draw on the
+clip lane and on the play bar, so they exist before any music is placed. Dragging a clip
+body or either edge snaps to a marker within 7 *pixels* — a pixel tolerance, not a time
+one, so it feels the same on a 30-second cut and a five-minute one. This is the point of
+markers: lining a hit to a frame stops being a matter of nudging by eye.
+
+**The source monitor shows two playheads.** White is where auditioning is up to; amber is
+where the *picture* is, mapped into the song via `sourceIn + (pos - start)`, and it appears
+only when the video playhead is over a clip of that track. The other track rows get the
+same amber tick, so a clip playing under picture is visible even while auditioning a
+different song. Verified: clip at 5s with a 30s in-point, playhead at 20s → 30% of a 150s
+track; at 40s → 43.33%.
+
+**Don't put backticks in the CSS.** The whole stylesheet is a JS template literal, so a
+backtick in a comment ends the string and the app fails to parse. Cost a confusing
+blank-page debug.
+
+**`.bms-mark` is the Brightworks logo.** Marker classes are `.bms-cue` / `.bms-cue-pip`
+for exactly this reason — the first attempt collided and restyled the logo to 9px wide.
+Check for a class before adding one; the stylesheet is one long string with no scoping.
 
 **Drag state is computed outside the `setClips` updater.** `pointerup` fires before React
 flushes `pointermove`'s update, so reading `clipsRef` in `endClipDrag` reports the

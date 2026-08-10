@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
 import { exportWithMusic, exportFileName, downloadBlob } from "./exportMix.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -181,7 +181,11 @@ async function analyseAudio(file, numBars = 300) {
   }
 }
 
-function WaveformSVG({ waveform, progress, color, height = 56, dimmed = false }) {
+// Memoised, and `progress` is quantised by callers: the playhead now advances
+// every frame, and rebuilding a few hundred <rect>s at 60fps for a fill effect
+// nobody can see move that finely is wasted work. The playhead line itself is a
+// separate element, so it still moves smoothly.
+const WaveformSVG = memo(function WaveformSVG({ waveform, progress, color, height = 56, dimmed = false }) {
   const BAR_W = 1;
   const GAP   = 0.5;
   const n     = waveform.length;
@@ -212,11 +216,15 @@ function WaveformSVG({ waveform, progress, color, height = 56, dimmed = false })
       })}
     </svg>
   );
-}
+});
 
 function uid() { return Math.random().toString(36).slice(2,10); }
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(v, hi)); }
+
+// Round a 0–1 progress value to 200 steps, so a memoised waveform only redraws
+// when the fill visibly changes rather than on every animation frame.
+function coarse(p) { return Math.round(clamp(p, 0, 1) * 200) / 200; }
 
 // Seeking a media element that hasn't loaded its metadata yet is unreliable —
 // the browser may discard the position and start from zero. Apply it now if the
@@ -364,11 +372,6 @@ const CSS = `
 .bms-live-dot { width:6px; height:6px; border-radius:50%; background:var(--red); animation:bms-pulse .9s infinite; }
 .bms-live-txt { font-size:9px; color:var(--red); letter-spacing:.14em; text-transform:uppercase; }
 
-.bms-nowplaying {
-  display:flex; align-items:center; gap:7px; margin-bottom:9px; min-width:0;
-  font-size:11px; color:rgba(232,232,242,.66);
-}
-.bms-np-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 /* Scrubber */
 .bms-scrub { width:100%; height:22px; cursor:pointer; display:block; touch-action:none; }
@@ -476,6 +479,13 @@ const CSS = `
 .bms-titem-row { display:flex; align-items:center; gap:9px; }
 .bms-ticon { width:32px; height:32px; border-radius:7px; display:flex; align-items:flex-end; justify-content:center; gap:2px; padding-bottom:5px; flex-shrink:0; }
 .bms-tname { font-size:12px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* The transport carries no chips now, so this is where 1–9 is discoverable. */
+.bms-tkey {
+  display:grid; place-items:center; width:16px; height:16px; flex-shrink:0;
+  border-radius:4px; background:rgba(255,255,255,.06); color:var(--dim);
+  font-size:9px; font-weight:600;
+}
+.bms-titem.on .bms-tkey { background:rgba(255,255,255,.12); color:#BFBFD6; }
 .bms-tmeta { font-size:9.5px; color:var(--dim); margin-top:1px; }
 .bms-badge { font-size:8.5px; padding:2px 6px; border-radius:4px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; }
 .bms-bars { display:flex; align-items:flex-end; gap:2px; height:14px; flex-shrink:0; }
@@ -500,10 +510,6 @@ const CSS = `
   cursor:grab; overflow:hidden; display:flex; align-items:center; min-width:8px;
 }
 .bms-clip.on { cursor:grabbing; box-shadow:0 0 0 1px rgba(255,255,255,.22) inset; }
-.bms-clip-name {
-  font-size:9px; font-weight:600; padding:0 8px; pointer-events:none;
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-}
 .bms-clip-edge { position:absolute; top:0; bottom:0; width:9px; cursor:ew-resize; }
 .bms-clip-edge.in  { left:0; }
 .bms-clip-edge.out { right:0; }
@@ -516,37 +522,37 @@ const CSS = `
   position:absolute; top:0; bottom:0; width:1px; background:var(--accent);
   pointer-events:none; opacity:.85;
 }
-.bms-lane-hint { margin-top:5px; font-size:9.5px; color:rgba(232,232,242,.5); }
-
-/* ── A/B row ─────────────────────────────────────────────────────────────────
-   Comparing songs against the same cut is the job, so this sits on the
-   transport rather than behind the drawer, and stays put while picture rolls. */
-.bms-ab { display:flex; align-items:center; gap:5px; margin-top:7px; flex-wrap:wrap; }
-.bms-ab-label {
-  font-size:9px; letter-spacing:.13em; text-transform:uppercase;
-  color:rgba(232,232,242,.45); font-weight:600; margin-right:2px;
+/* ── Markers ─────────────────────────────────────────────────────────────────
+   A point in the cut worth scoring to. Deliberately the one loud thing down
+   here: everything else on the transport is a muted grey, so the frame you are
+   working to reads at a glance. Clips snap to these. */
+/* Named cue, not mark: .bms-mark is already the Brightworks logo mark.
+   No backticks in here — this whole block is a JS template literal. */
+.bms-cue {
+  position:absolute; top:0; bottom:0; width:9px; margin-left:-4px;
+  cursor:pointer; z-index:3;
 }
-.bms-ab-chip {
-  display:flex; align-items:center; gap:5px; max-width:190px;
-  background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.1);
-  color:#BFBFD6; border-radius:999px; padding:4px 10px 4px 6px;
-  font-size:10px; font-weight:500; cursor:pointer; white-space:nowrap;
+.bms-cue::before {
+  content:""; position:absolute; left:4px; top:0; bottom:0; width:1.5px;
+  background:var(--accent); box-shadow:0 0 0 1px rgba(8,8,13,.55);
 }
-.bms-ab-chip:hover { background:rgba(255,255,255,.1); color:var(--text); }
-.bms-ab-chip.on { font-weight:600; }
-.bms-ab-key {
-  display:grid; place-items:center; width:14px; height:14px; flex-shrink:0;
-  border-radius:4px; background:rgba(0,0,0,.35); font-size:8.5px; opacity:.75;
+.bms-cue::after {
+  content:""; position:absolute; left:0; top:0;
+  border-left:4.5px solid transparent; border-right:4.5px solid transparent;
+  border-top:5px solid var(--accent);
 }
-.bms-ab-name { overflow:hidden; text-overflow:ellipsis; }
+.bms-cue:hover::before { width:2.5px; left:3.25px; }
+/* The same marks on the play bar, so they exist before any music is placed. */
+.bms-cue-pip {
+  position:absolute; top:-3px; bottom:-3px; width:1.5px; margin-left:-.75px;
+  background:var(--accent); opacity:.8; pointer-events:none;
+}
 
 /* ── Source monitor ──────────────────────────────────────────────────────────
    The selected track on its own transport: scrubbing and playing here move the
    song only, so you can find a section without disturbing the picture. */
 .bms-src { border-bottom:1px solid #14141E; background:#15151F; }
 .bms-src-head { display:flex; align-items:center; gap:7px; padding:8px 12px 0; }
-.bms-src-name { font-size:11px; font-weight:600; color:#BFBFD6; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.bms-src-tag { font-size:9px; color:var(--dim); letter-spacing:.04em; white-space:nowrap; }
 .bms-src-wave { position:relative; margin:4px 12px 0; cursor:pointer; touch-action:none; user-select:none; }
 .bms-src-mask { position:absolute; top:0; bottom:0; background:rgba(8,8,13,.66); pointer-events:none; }
 .bms-src-region {
@@ -561,6 +567,19 @@ const CSS = `
 .bms-src-playhead {
   position:absolute; top:0; bottom:0; width:1px; background:#E8E8F2;
   pointer-events:none; opacity:.9;
+}
+/* Where the picture is, mapped into the song. Accent-coloured so it reads as
+   "the video", against the white playhead that means "auditioning". */
+.bms-src-vidhead {
+  position:absolute; top:0; bottom:0; width:2px; margin-left:-1px;
+  background:var(--accent); pointer-events:none; z-index:2;
+  box-shadow:0 0 6px rgba(245,158,11,.55);
+}
+.bms-src-vidhead.row { opacity:.75; width:1.5px; }
+.bms-src-vidflag {
+  position:absolute; top:-1px; left:4px; padding:1px 4px; border-radius:3px;
+  background:var(--accent); color:#12121B; font-size:8.5px; font-weight:700;
+  white-space:nowrap;
 }
 .bms-src-bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:8px 12px 10px; }
 .bms-srcbtn {
@@ -636,8 +655,6 @@ const CSS = `
   .bms-vol input[type=range] { display:none; }
   .bms-transport { gap:7px; }
 
-  /* No room for the running commentary; the marks readout is the useful half. */
-  .bms-src-tag { display:none; }
   .bms-src-read .bms-src-dim { display:block; margin-left:0; }
   /* Add-to-timeline gets its own row rather than being squeezed to an ellipsis. */
   .bms-srcbtn.add { margin-left:0; width:100%; padding:8px; text-align:center; }
@@ -645,11 +662,9 @@ const CSS = `
   .bms-src-handle { width:18px; margin-left:-9px; opacity:.4; }
   .bms-clip-edge { width:14px; }
   .bms-lane { height:30px; }
-  /* Scroll rather than wrap: a long track list would otherwise push the
-     transport off a phone screen. */
-  .bms-ab { flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; }
-  .bms-ab::-webkit-scrollbar { display:none; }
-  .bms-ab-chip { flex-shrink:0; max-width:140px; }
+  .bms-cue { width:15px; margin-left:-7px; }
+  .bms-cue::before { left:7px; }
+  .bms-cue::after { left:3px; }
 }
 
 /* The full lockup fits at 360px (a very common Android width); only below it
@@ -711,6 +726,9 @@ export default function MusicLayerV3() {
   const [clips, setClips]                   = useState([]);
   const [selectedClipId, setSelectedClipId] = useState(null);
   const [nudgeHint, setNudgeHint]           = useState("");
+  // Points in the cut worth scoring to — a hit, a cut, a line landing. Clips
+  // snap to these when dragged, which is the whole reason to place one.
+  const [markers, setMarkers]               = useState([]);
 
   // ── Export
   const [exportState, setExportState] = useState(null); // { phase, progress }
@@ -743,6 +761,7 @@ export default function MusicLayerV3() {
   const volRef           = useRef(vol);
   const durRef           = useRef(dur);
   const clipsRef         = useRef(clips);
+  const markersRef       = useRef(markers);
   const srcPosRef        = useRef(0);
   const srcPlayingRef    = useRef(false);
   const laneRef          = useRef(null);
@@ -755,6 +774,7 @@ export default function MusicLayerV3() {
   useEffect(() => { playingRef.current       = playing;       }, [playing]);
   useEffect(() => { volRef.current           = vol;           }, [vol]);
   useEffect(() => { clipsRef.current         = clips;         }, [clips]);
+  useEffect(() => { markersRef.current       = markers;       }, [markers]);
   useEffect(() => { srcPlayingRef.current    = srcPlaying;    }, [srcPlaying]);
 
   const activeTrack  = tracks.find(t => t.id === activeTrackId) || null;
@@ -766,6 +786,20 @@ export default function MusicLayerV3() {
   const srcIn  = Math.max(0, activeTrack?.srcIn ?? 0);
   const srcOut = Math.min(activeTrack?.srcOut ?? srcDur, srcDur) || srcDur;
   const srcLen = Math.max(0, srcOut - srcIn);
+
+  // Where the cut currently sits *inside a song*, for whichever clip the video
+  // playhead is over. This is what puts a second playhead on the waveform: with
+  // a clip placed, you can watch the picture and see where in the track you are
+  // at the same time. Null when the playhead is not over a clip.
+  const songPos = useMemo(() => {
+    const c = clips.find(x => pos >= x.start && pos < x.start + x.duration);
+    if (!c) return null;
+    const track = tracks.find(t => t.id === c.trackId);
+    if (!track?.audioDuration) return null;
+    const at = c.sourceIn + (pos - c.start);
+    if (at < 0 || at > track.audioDuration) return null;
+    return { trackId: c.trackId, at, frac: at / track.audioDuration };
+  }, [pos, clips, tracks]);
 
   // ── Auto-fetch account_id on mount — V4 requires it in every endpoint path
   useEffect(() => {
@@ -936,6 +970,24 @@ export default function MusicLayerV3() {
       rafRef.current = requestAnimationFrame(tick);
     } else cancelAnimationFrame(rafRef.current);
     return () => cancelAnimationFrame(rafRef.current);
+  }, [playing, currentAsset]);
+
+  // Follow the video's own clock while it plays. `timeupdate` fires about four
+  // times a second, which is enough to know where the cut is but reads as a
+  // stuttering scrubber — and makes the source indicator jump in visible steps.
+  useEffect(() => {
+    if (!playing || !currentAsset) return;
+    let id;
+    const tick = () => {
+      const v = videoRef.current;
+      if (v && v.readyState >= 1) {
+        posRef.current = v.currentTime;
+        setPos(v.currentTime);
+      }
+      id = requestAnimationFrame(tick);
+    };
+    id = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(id);
   }, [playing, currentAsset]);
 
   // Volume sync
@@ -1139,6 +1191,41 @@ export default function MusicLayerV3() {
     if (audioRef.current) delete audioRef.current.dataset.clipId;
   }, [selectedClipId]);
 
+  // ── Markers
+  //
+  // A marker is a point in the *cut*, not in a song: the frame a hit lands on,
+  // where a line ends, where the picture turns. Clips snap to them, so lining
+  // music up to a moment stops being a matter of nudging by eye.
+  const toggleMarker = useCallback(() => {
+    const at = timelineNow();
+    setMarkers((prev) => {
+      // Pressing M again on a marker removes it, so one key does both.
+      const near = prev.find(m => Math.abs(m - at) < 0.35);
+      if (near != null) {
+        setNudgeHint(`Marker cleared at ${fmt(near, DISPLAY_FPS)}`);
+        return prev.filter(m => m !== near);
+      }
+      setNudgeHint(`Marker at ${fmt(at, DISPLAY_FPS)}`);
+      return [...prev, at].sort((a, b) => a - b);
+    });
+  }, [timelineNow]);
+
+  const clearMarkers = useCallback(() => { setMarkers([]); setNudgeHint("Markers cleared"); }, []);
+
+  // Pull a dragged edge onto a marker when it lands close by. The threshold is
+  // in pixels, not seconds, so it feels the same on a 30s cut and a 5m one.
+  const snapToMarker = useCallback((seconds, laneWidth, total) => {
+    const list = markersRef.current;
+    if (!list.length || !laneWidth || !total) return seconds;
+    const tolerance = (7 / laneWidth) * total;
+    let best = seconds, bestGap = tolerance;
+    for (const m of list) {
+      const gap = Math.abs(m - seconds);
+      if (gap < bestGap) { best = m; bestGap = gap; }
+    }
+    return best;
+  }, []);
+
   // ── Dragging clips on the lane
   const beginClipDrag = useCallback((e, clip, mode) => {
     e.stopPropagation();
@@ -1168,24 +1255,27 @@ export default function MusicLayerV3() {
       // Anywhere in the cut. Clamping to `total - duration` would pin a clip
       // longer than the picture at zero, which is the common case: marking an
       // in point alone leaves the out at the end of the song.
-      next = { ...base, start: clamp(d.start + delta, 0, Math.max(0, total - 0.1)),
+      const raw = clamp(d.start + delta, 0, Math.max(0, total - 0.1));
+      next = { ...base, start: snapToMarker(raw, width, total),
                sourceIn: d.sourceIn, duration: d.duration };
     } else if (d.mode === "in") {
       // Trimming the head moves the source in-point with it, so the music that
       // was lined up against picture stays lined up.
-      const shift = clamp(delta, -Math.min(d.start, d.sourceIn), d.duration - 0.1);
+      const wanted = snapToMarker(d.start + delta, width, total) - d.start;
+      const shift  = clamp(wanted, -Math.min(d.start, d.sourceIn), d.duration - 0.1);
       next = { ...base, start: d.start + shift, sourceIn: d.sourceIn + shift,
                duration: d.duration - shift };
     } else {
-      const track = tracksRef.current.find(t => t.id === d.trackId);
-      const room  = (track?.audioDuration || Infinity) - d.sourceIn;
+      const track  = tracksRef.current.find(t => t.id === d.trackId);
+      const room   = (track?.audioDuration || Infinity) - d.sourceIn;
+      const wanted = snapToMarker(d.start + d.duration + delta, width, total) - d.start;
       next = { ...base, start: d.start, sourceIn: d.sourceIn,
-               duration: clamp(d.duration + delta, 0.1, Math.min(room, total - d.start)) };
+               duration: clamp(wanted, 0.1, Math.min(room, total - d.start)) };
     }
 
     d.last = next;
     setClips(prev => prev.map(c => (c.id === d.id ? { ...c, ...next } : c)));
-  }, []);
+  }, [snapToMarker]);
 
   const endClipDrag = useCallback(() => {
     const d = clipDragRef.current;
@@ -1391,6 +1481,7 @@ export default function MusicLayerV3() {
       if (e.code === "Space")  { e.preventDefault(); handlePlay(); wakeChrome(); }
       if (e.code === "KeyF")   { e.preventDefault(); toggleFullscreen(); }
       if (e.code === "KeyA")   { e.preventDefault(); toggleSource(); }
+      if (e.code === "KeyM")   { e.preventDefault(); e.shiftKey ? clearMarkers() : toggleMarker(); wakeChrome(); }
       if (e.code === "KeyI")   { e.preventDefault(); markSource("in"); }
       if (e.code === "KeyO")   { e.preventDefault(); markSource("out"); }
       if (e.code === "Enter")  { e.preventDefault(); addToTimeline(); }
@@ -1402,7 +1493,8 @@ export default function MusicLayerV3() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [handlePlay, toggleFullscreen, wakeChrome, toggleSource, markSource,
-      addToTimeline, selectedClipId, nudgeClip, removeClip, seekTo, chooseTrack]);
+      addToTimeline, selectedClipId, nudgeClip, removeClip, seekTo, chooseTrack,
+      toggleMarker, clearMarkers]);
 
   // ── Track file handling
   const handleFiles = useCallback((files) => {
@@ -1683,13 +1775,6 @@ export default function MusicLayerV3() {
 
               {/* Bottom overlay: scrubber + transport */}
               <div className={`bms-ov bms-ov-bot${chromeHidden ? " bms-hidden" : ""}`}>
-                {activeTrack && (
-                  <div className="bms-nowplaying">
-                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: activeTrack.color, flexShrink: 0 }} />
-                    <span className="bms-np-name">{activeTrack.name}</span>
-                  </div>
-                )}
-
                 <div
                   className="bms-scrub"
                   onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); scrubFrom(e); }}
@@ -1703,12 +1788,18 @@ export default function MusicLayerV3() {
                 >
                   <div className="bms-scrub-track">
                     <div className="bms-scrub-fill" style={{ width: `${scrubPct}%` }} />
+                    {/* Markers show on the play bar too, so they are visible
+                        before any music has been placed. */}
+                    {effectiveDur > 0 && markers.map(m => (
+                      <div key={m} className="bms-cue-pip"
+                           style={{ left: `${(m / effectiveDur) * 100}%` }} />
+                    ))}
                     <div className="bms-scrub-knob" style={{ left: `${scrubPct}%` }} />
                   </div>
                 </div>
 
                 {/* Music clips, in video time, under the play bar */}
-                {clips.length > 0 && effectiveDur > 0 && (
+                {(clips.length > 0 || markers.length > 0) && effectiveDur > 0 && (
                   <div className="bms-lane" ref={laneRef}>
                     {clips.map(c => {
                       const track = tracks.find(t => t.id === c.trackId);
@@ -1731,7 +1822,6 @@ export default function MusicLayerV3() {
                           onPointerCancel={endClipDrag}
                           title={`${track.name} — from ${fmt(c.sourceIn, DISPLAY_FPS)} of the track`}
                         >
-                          <span className="bms-clip-name" style={{ color: track.color }}>{track.name}</span>
                           <span
                             className="bms-clip-edge in"
                             onPointerDown={e => beginClipDrag(e, c, "in")}
@@ -1757,34 +1847,18 @@ export default function MusicLayerV3() {
                         </div>
                       );
                     })}
-                    <div className="bms-lane-head" style={{ left: `${scrubPct}%` }} />
-                  </div>
-                )}
-
-                {clips.length > 0 && (
-                  <div className="bms-lane-hint mono">
-                    {nudgeHint || "Drag the clip to move it · edges to trim · ← → to nudge"}
-                  </div>
-                )}
-
-                {/* A/B row: swap the song under the cut without losing the timing */}
-                {tracks.length > 0 && (
-                  <div className="bms-ab">
-                    <span className="bms-ab-label">Music</span>
-                    {tracks.map((t, i) => (
-                      <button
-                        key={t.id}
-                        className={`bms-ab-chip${t.id === activeTrackId ? " on" : ""}`}
-                        style={t.id === activeTrackId
-                          ? { borderColor: t.color, color: t.color, background: `${t.color}1F` }
-                          : undefined}
-                        onClick={() => { chooseTrack(t.id); wakeChrome(); }}
-                        title={`Put "${t.name}" under the cut (${i + 1})`}
-                      >
-                        {i < 9 && <span className="bms-ab-key mono">{i + 1}</span>}
-                        <span className="bms-ab-name">{t.name}</span>
-                      </button>
+                    {/* Drawn over the clips: a marker is a point in the cut, and
+                        the clip is the thing being lined up to it. */}
+                    {markers.map(m => (
+                      <div
+                        key={m}
+                        className="bms-cue"
+                        style={{ left: `${(m / effectiveDur) * 100}%` }}
+                        title={`Marker at ${fmt(m, DISPLAY_FPS)} — click to go there`}
+                        onPointerDown={e => { e.stopPropagation(); seekTo(m); }}
+                      />
                     ))}
+                    <div className="bms-lane-head" style={{ left: `${scrubPct}%` }} />
                   </div>
                 )}
 
@@ -1845,7 +1919,12 @@ export default function MusicLayerV3() {
                 </svg>
                 <span className="bms-dock-label">Source</span>
                 <span className="bms-count">{tracks.length || ""}</span>
-                <span className="bms-dock-hint">1–9 swap songs · click a waveform to play it · I / O to mark · Enter to add</span>
+                {/* Doubles as the feedback line — "Starts at…", "Marker at…" —
+                    so placing a clip says what it did without another row of
+                    text sitting over the picture. */}
+                <span className="bms-dock-hint">
+                  {nudgeHint || "1–9 swap songs · click a waveform to play it · I / O mark · M marker · Enter add"}
+                </span>
               </button>
 
               {dockOpen && (
@@ -1856,15 +1935,11 @@ export default function MusicLayerV3() {
                     <>
                       {activeTrack && (
                         <div className="bms-src">
-                          <div className="bms-src-head">
-                            <span style={{ width: 6, height: 6, borderRadius: "50%", background: activeTrack.color, flexShrink: 0 }} />
-                            <span className="bms-src-name">{activeTrack.name}</span>
-                            {activeTrack.analysing
-                              ? <span className="bms-wrow-busy">Analysing…</span>
-                              : <span className="bms-src-tag">
-                                  click the waveform to play from there — the video stays put
-                                </span>}
-                          </div>
+                          {activeTrack.analysing && (
+                            <div className="bms-src-head">
+                              <span className="bms-wrow-busy">Analysing…</span>
+                            </div>
+                          )}
 
                           <div
                             className="bms-src-wave"
@@ -1888,7 +1963,7 @@ export default function MusicLayerV3() {
                           >
                             <WaveformSVG
                               waveform={activeTrack.wave}
-                              progress={srcDur ? srcPos / srcDur : 0}
+                              progress={srcDur ? coarse(srcPos / srcDur) : 0}
                               color={activeTrack.color}
                               height={72}
                             />
@@ -1924,6 +1999,19 @@ export default function MusicLayerV3() {
                                   title="Drag to set the out point"
                                 />
                                 <div className="bms-src-playhead" style={{ left: `${(srcPos / srcDur) * 100}%` }} />
+
+                                {/* Where the picture is, mapped into this song.
+                                    Distinct from the white audition playhead —
+                                    this one follows the video. */}
+                                {songPos?.trackId === activeTrack.id && (
+                                  <div
+                                    className="bms-src-vidhead"
+                                    style={{ left: `${songPos.frac * 100}%` }}
+                                    title={`Picture is here — ${fmt(songPos.at, DISPLAY_FPS)} of the track`}
+                                  >
+                                    <span className="bms-src-vidflag mono">{fmt(pos, DISPLAY_FPS)}</span>
+                                  </div>
+                                )}
                               </>
                             )}
                           </div>
@@ -1973,6 +2061,12 @@ export default function MusicLayerV3() {
                             {t.analysing && <span className="bms-wrow-busy">Analysing…</span>}
                           </div>
                           <WaveformSVG waveform={t.wave} progress={0} color={t.color} height={46} dimmed />
+                          {/* A clip of this track may be playing even though you
+                              are auditioning a different one. */}
+                          {songPos?.trackId === t.id && (
+                            <div className="bms-src-vidhead row"
+                                 style={{ left: `${songPos.frac * 100}%` }} />
+                          )}
                         </div>
                       ))}
                     </>
@@ -2021,14 +2115,22 @@ export default function MusicLayerV3() {
                 ) : (
                   <>
                     <div className="bms-divider">Arrangement</div>
-                    {tracks.map(t => {
+                    {tracks.map((t, i) => {
                       const isOn = t.id === activeTrackId;
                       return (
-                        <div key={t.id} className={`bms-titem${isOn ? " on" : ""}`} onClick={() => selectTrack(t.id)}>
+                        <div
+                          key={t.id}
+                          className={`bms-titem${isOn ? " on" : ""}`}
+                          onClick={() => chooseTrack(t.id)}
+                          title={i < 9 ? `Press ${i + 1} to put this under the cut` : undefined}
+                        >
                           <div className="bms-titem-row">
+                            {/* The keyboard number lives here now that the transport
+                                carries no chips — otherwise 1–9 is undiscoverable. */}
+                            {i < 9 && <span className="bms-tkey mono">{i + 1}</span>}
                             <div className="bms-ticon" style={{ background: `${t.color}1C`, border: `1px solid ${t.color}2E` }}>
-                              {[.4, .85, .5, 1, .65].map((h, i) => (
-                                <span key={i} style={{ width: 2, height: `${h * 100}%`, background: t.color, borderRadius: 1, opacity: isOn ? 1 : .35 }} />
+                              {[.4, .85, .5, 1, .65].map((h, j) => (
+                                <span key={j} style={{ width: 2, height: `${h * 100}%`, background: t.color, borderRadius: 1, opacity: isOn ? 1 : .35 }} />
                               ))}
                             </div>
                             <div style={{ flex: 1, minWidth: 0 }}>
