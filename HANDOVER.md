@@ -138,9 +138,13 @@ six times the width of the cut. `start` is therefore clamped to the *cut*
 `clamp(start, 0, 0)` and pinned every such clip at zero, unmovable by drag or arrow key.
 Overhang is fine; `renderMusicMix` truncates at the end of the video.
 
-**Swapping songs is the point of the tool, so it is one keystroke.** `1`–`9`, or the chips
-on the transport, put a different track under the cut: the clip keeps its position, length
-and `sourceIn`, and only `trackId` changes. It works mid-playback — picture never stops,
+**Swapping songs is the point of the tool, so it is one keystroke.** `1`–`9` put a
+different track under the cut. The clip keeps its **position in the cut**, but what plays
+inside it comes from the new track's own `srcIn`/`srcOut` — every song has a different
+section that suits the same stretch of picture, which is why marks are per track. Carrying
+the previous track's `sourceIn` across was a bug: pressing `2` played song two from song
+one's in point. A track with no marks keeps the clip's existing length rather than
+ballooning to the whole song. It works mid-playback — picture never stops,
 and the music element is re-cued immediately rather than waiting for the routing pass.
 Clicking another waveform while the cut is rolling swaps rather than auditioning, on the
 grounds that you asked to hear the alternative *against the edit*. The swap is guarded on

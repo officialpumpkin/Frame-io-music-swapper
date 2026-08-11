@@ -1390,10 +1390,11 @@ export default function MusicLayerV3() {
     }
   }, [stopSource]);
 
-  // Put a different song under the picture. This is the A/B move the tool
-  // exists for, so it holds everything else still: the clip keeps its position,
-  // its length and how far into the song it starts, and only the song changes
-  // underneath it. It works mid-playback — picture never stops.
+  // Put a different song under the picture. The clip keeps its place in the cut
+  // and the picture never stops, but what plays inside it comes from the new
+  // track's *own* in/out — every song has a different section that fits the
+  // same stretch of video, which is the whole reason for marking them
+  // separately. Carrying the previous track's in-point across was the bug.
   const chooseTrack = useCallback((id) => {
     const track = tracksRef.current.find(t => t.id === id);
     if (!track) return;
@@ -1411,11 +1412,20 @@ export default function MusicLayerV3() {
     // Guarded on the clip's own track, not the active one: picking a song you
     // happen to be auditioning must still put it under the picture.
     if (target && target.trackId !== id) {
-      const room = Math.max(0, (track.audioDuration || 0) - 0.1);
-      swapped = { ...target, trackId: id, sourceIn: Math.min(target.sourceIn, room) };
+      const d      = track.audioDuration || 0;
+      const marked = track.srcIn != null || track.srcOut != null;
+      const from   = clamp(track.srcIn ?? 0, 0, Math.max(0, d - 0.1));
+      const to     = clamp(track.srcOut ?? d, from + 0.1, d);
+      // An unmarked track has nothing to say about length, so the clip keeps
+      // the footprint you gave it rather than ballooning to the whole song.
+      const length = marked ? to - from : Math.min(target.duration, Math.max(0.1, d - from));
+
+      swapped = { ...target, trackId: id, sourceIn: from, duration: length };
       setClips(prev => prev.map(c => (c.id === target.id ? swapped : c)));
       setSelectedClipId(target.id);
-      setNudgeHint(`${track.name} — same spot, same length`);
+      setNudgeHint(marked
+        ? `${track.name} — from its own in point ${fmt(from, DISPLAY_FPS)}`
+        : `${track.name} — no in point marked, playing from the top`);
     }
 
     selectTrack(id);
