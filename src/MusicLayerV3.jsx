@@ -506,16 +506,20 @@ const CSS = `
   background:rgba(255,255,255,.05); overflow:hidden; touch-action:none;
 }
 .bms-clip {
+  --edge:9px;
   position:absolute; top:2px; bottom:2px; border:1px solid; border-radius:4px;
   cursor:grab; overflow:hidden; display:flex; align-items:center; min-width:8px;
 }
 .bms-clip.on { cursor:grabbing; box-shadow:0 0 0 1px rgba(255,255,255,.22) inset; }
-.bms-clip-edge { position:absolute; top:0; bottom:0; width:9px; cursor:ew-resize; }
+/* Above the delete button: where the two ever meet, trimming wins. They are
+   also kept physically apart below — the button used to sit on top of 7 of the
+   out handle's 9 pixels, so a midpoint drag did nothing at all. */
+.bms-clip-edge { position:absolute; top:0; bottom:0; width:var(--edge); cursor:ew-resize; z-index:2; }
 .bms-clip-edge.in  { left:0; }
 .bms-clip-edge.out { right:0; }
 .bms-clip-rm {
-  position:absolute; right:2px; top:50%; transform:translateY(-50%);
-  width:15px; height:15px; border:0; border-radius:4px; cursor:pointer;
+  position:absolute; right:calc(var(--edge) + 3px); top:50%; transform:translateY(-50%);
+  width:15px; height:15px; border:0; border-radius:4px; cursor:pointer; z-index:1;
   background:rgba(0,0,0,.45); color:#E8E8F2; font-size:13px; line-height:1;
 }
 .bms-lane-head {
@@ -604,6 +608,16 @@ const CSS = `
 .bms-src-read { font-size:10px; color:#9A9AB8; }
 .bms-src-dim { color:var(--dim); }
 
+/* The finished file, as a link you can actually click. The automatic download
+   fires too, but a scripted click can be dropped silently. */
+.bms-dl {
+  display:block; margin-top:9px; padding:9px 11px; border-radius:8px;
+  background:#10B98114; border:1px solid #10B98140; text-decoration:none;
+}
+.bms-dl:hover { background:#10B9811F; border-color:#10B98166; }
+.bms-dl-1 { display:block; font-size:11.5px; font-weight:600; color:var(--green); word-break:break-all; }
+.bms-dl-2 { display:block; font-size:9.5px; color:var(--dim); margin-top:3px; }
+
 /* ── Export ──────────────────────────────────────────────────────────────── */
 .bms-export {
   padding:11px; padding-bottom:max(11px, env(safe-area-inset-bottom));
@@ -660,7 +674,7 @@ const CSS = `
   .bms-srcbtn.add { margin-left:0; width:100%; padding:8px; text-align:center; }
   /* Fatter targets — these are dragged with a thumb. */
   .bms-src-handle { width:18px; margin-left:-9px; opacity:.4; }
-  .bms-clip-edge { width:14px; }
+  .bms-clip { --edge:14px; }
   .bms-lane { height:30px; }
   .bms-cue { width:15px; margin-left:-7px; }
   .bms-cue::before { left:7px; }
@@ -733,6 +747,7 @@ export default function MusicLayerV3() {
   // ── Export
   const [exportState, setExportState] = useState(null); // { phase, progress }
   const [exportErr, setExportErr]     = useState("");
+  const [exportReady, setExportReady] = useState(null);
 
   // ── Shell / chrome
   const [drawerOpen, setDrawerOpen]     = useState(false);
@@ -1578,6 +1593,7 @@ export default function MusicLayerV3() {
     setPlaying(false);
     videoRef.current?.pause();
     audioRef.current?.pause();
+    setExportReady(prev => { if (prev) URL.revokeObjectURL(prev.url); return null; });
     try {
       const blob = await exportWithMusic({
         videoUrl:      currentAsset.url,
@@ -1588,12 +1604,19 @@ export default function MusicLayerV3() {
         durationSec:   dur || videoRef.current?.duration,
         onPhase:       setExportState,
       });
-      downloadBlob(blob, exportFileName(currentAsset.name));
+      const name = exportFileName(currentAsset.name);
+      // Keep the file reachable as a real link as well as firing the download.
+      // A scripted a.click() is silently ignored in some browsers and in most
+      // automated ones, and that looked exactly like "the export did nothing".
+      setExportReady({ url: URL.createObjectURL(blob), name, size: blob.size });
+      downloadBlob(blob, name);
     } catch (e) {
-      setExportErr(e.message);
+      setExportErr(e.message || String(e));
     }
     setExportState(null);
   }, [currentAsset, tracks, clips, activeTrackId, vol, dur, exportState]);
+
+  useEffect(() => () => { if (exportReady) URL.revokeObjectURL(exportReady.url); }, [exportReady]);
 
   // ── Derived
   const clipCounts = useMemo(() => {
@@ -2191,7 +2214,16 @@ export default function MusicLayerV3() {
                   <div className="bms-chip bms-chip-err" style={{ display: "block", marginTop: 9 }}>{exportErr}</div>
                 )}
 
-                {!exportState && !exportErr && currentAsset && tracks.length > 0 && (
+                {exportReady && !exportState && (
+                  <a className="bms-dl" href={exportReady.url} download={exportReady.name}>
+                    <span className="bms-dl-1">↓ {exportReady.name}</span>
+                    <span className="bms-dl-2">
+                      {(exportReady.size / 1048576).toFixed(1)} MB · saved automatically — click here if it didn't
+                    </span>
+                  </a>
+                )}
+
+                {!exportState && !exportErr && !exportReady && currentAsset && tracks.length > 0 && (
                   <div className="bms-note">
                     Video is copied, not re-encoded — same resolution and quality.
                     Music is mixed under the original audio.

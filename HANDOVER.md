@@ -248,6 +248,17 @@ verified structurally — the symptom can't be reproduced outside a real phone. 
 check in portrait that the waveform dock and the sheet's Export button are reachable. If
 still clipped, the fallback is driving layout from the `visualViewport` API.
 
+**Unresolved: an export that reports no error and produces no file.** Reported against a
+real cut — the button showed "Downloading video…", returned to idle, and nothing landed in
+Downloads. Not reproduced yet. Two silent paths have been closed rather than diagnosed:
+`setExportErr(e.message)` rendered nothing when the thrown value had no `message` (the chip
+is falsy-guarded, so the failure was invisible), and `downloadBlob`'s scripted `a.click()`
+is dropped silently by some browsers and most automated ones, which looks identical to
+"the export did nothing". The finished file is now also offered as a real `<a download>`
+link that persists until the next export. **If this recurs, the first question is whether
+the error chip is now showing something** — that distinguishes a thrown failure from a
+blocked download.
+
 **Untested against a real render: multi-clip export.** The scheduling is covered by unit
 tests (see below) but only a single whole-track export has been rendered through ffmpeg
 end-to-end and inspected.
