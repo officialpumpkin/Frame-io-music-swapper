@@ -1,7 +1,10 @@
 # Brightworks Music Swapper — Handover
 
-_Last updated: 10 August 2026. Repo: `officialpumpkin/Frame-io-music-swapper`. Current work
-is on branch `spotting`, not yet merged — `main` @ `bc661b5` is what production serves._
+_Last updated: 18 August 2026. Repo: `officialpumpkin/Frame-io-music-swapper`, branch
+`main` @ `630eb99` — merged and serving production. `spotting` is merged and can be deleted._
+
+**Start here:** everything below is written down. What is *not* yet known is in
+_Needs testing_ at the end — one of those is blocking.
 
 ## What it is
 
@@ -93,21 +96,35 @@ mapping instead: set the playhead, read the rendered position, check the arithme
 media queries; iframes cannot reproduce the mobile URL-bar discrepancy because `dvh` and
 `vh` are identical there.
 
-## What changed this session
+## Keyboard
 
-1. **Frame.io integration was completely dead** — four stacked bugs (the two Vercel routing
-   issues above, plus the `data` envelope and `media_links` shape). Now working.
-2. **Marker UI removed** — the Mark button, Markers tab, marker strip, colour picker,
-   Premiere XML export and Frame.io comment sync all deleted (473 lines). Recoverable from
-   history at `622a792` if wanted later.
-3. **MP4 export added** — video stream-copied (`-c:v copy`, identical resolution/quality),
-   music rendered via `OfflineAudioContext` and mixed under the original audio with
-   `amix … normalize=0`. Runs in-browser via ffmpeg.wasm because Vercel caps serverless
-   responses near 4.5 MB.
-4. **Redesigned + rebranded** — video-centric cinema shell, floating auto-hiding transport,
-   scrubber, fullscreen (`F`), collapsible waveform dock, tracks drawer that becomes a
-   bottom sheet on mobile. Renamed to Brightworks Music Swapper — powered by Frame.io.
-5. **Source/record spotting model** — see below.
+The transport carries no song chips, so these are the only way to do several of these
+things. The dock header line lists the main ones.
+
+| Key | Does |
+|---|---|
+| `Space` | Play / pause the cut |
+| `1`–`9` | Put that track under the picture (works mid-playback) |
+| `I` / `O` | Mark in / out on the song in the source monitor |
+| `Enter` | Place the marked region as a clip at the playhead |
+| `M` | Drop a marker at the playhead; `M` again on it removes it |
+| `Shift+M` | Clear all markers |
+| `←` `→` | Nudge the selected clip a frame, or the playhead if none; `Shift` = one second |
+| `Delete` | Remove the selected clip |
+| `A` | Play / stop the source monitor |
+| `F` | Fullscreen |
+
+## How it got here
+
+Earlier work, in rough order: Frame.io V4 integration (four stacked bugs — the two Vercel
+routing issues above, plus the `data` envelope and `media_links` shape); the old marker UI
+removed (Mark button, Markers tab, colour picker, Premiere XML export, Frame.io comment
+sync — 473 lines, recoverable at `622a792`); in-browser MP4 export; the video-centric
+redesign and rebrand; then the source/record spotting model below.
+
+Most recently: the proxy allowlist (see _Security_), the source/record model, per-track
+in/out, cue markers with snapping, and a strip-back of on-screen text so the page is about
+the video.
 
 ## How music is placed against picture
 
@@ -232,9 +249,11 @@ moves off this origin. `api/expand.js` was a server-side request forgery — it 
 URL given to it — and is now allowlisted to Frame.io hosts over https, both on the request
 and on the redirect it lands on.
 
-**This is on `spotting`. `main` — which is what production serves — still has the open
-proxy**, so until this merges, `https://frame-io-music-swapper.vercel.app` will accept any
-V4 path and any method with Brightworks' token.
+**Merged and live.** Verified server-side against production, where CORS offers no
+protection: `/projects`, `/workspaces`, `/me`, `/comments` → 404 and never forwarded;
+`DELETE`/`POST` → 405; another account's ID → 403; the SSRF probe → 400; `/accounts` → the
+ID alone. Before the merge, an unauthenticated `/api/frameio/accounts` returned real
+account data.
 
 Still open, and now cheaper to judge: a shared passcode (one env var, entered once in the
 UI) would stop casual access by URL, but a client-side secret leaks the moment a client
@@ -279,3 +298,48 @@ failure currently surfaces in the UI as a bare `404`, which is worth improving.
 `npm run lint` is clean — 0 errors, 0 warnings. Keep it that way. The playhead bug above
 sat in plain sight as an exhaustive-deps warning while the warning count was treated as
 background noise.
+
+## Needs testing
+
+Nothing here is known-broken except the first item. Everything else is code that behaves
+correctly under measurement but has never been watched working by a human.
+
+Test link: `https://f.io/a-tEaQ7K` (J26022 Carrera, 1920×1080, 60.04s). It resolves because
+it carries a `/view/` segment — see the share-link note above.
+
+**1. Export — blocking, and the reason to start here.** Load the cut, place a clip, export.
+Three possible outcomes and they mean different things:
+- A green download link appears → it worked; the earlier report was the harness swallowing
+  a programmatic download.
+- A red error chip appears → that text is the root cause. It could not appear before.
+- Neither, the button just returns to idle → something fails before any error path, and
+  needs instrumenting inside `exportWithMusic`.
+
+**2. Volume slider.** Reported dead to mouse and keyboard at 1440×900; a real mouse drag
+worked here (0.42 → 1.0, both `<audio>` elements followed) and nothing overlays it. Most
+likely the tester set `.value` directly, which a React controlled input reverts. Move it
+with an actual mouse and settle it.
+
+**3. Out-trim handle.** The delete button used to cover 7 of the out handle's 9 pixels.
+Drag the right edge of a clip from its vertical midpoint, desktop and phone.
+
+**4. The amber picture-playhead, animating.** Its position is verified arithmetically (clip
+at 5s, in-point 30s, playhead 20s → 30% of a 150s track; at 40s → 43.33%) but never watched
+moving — `requestAnimationFrame` does not fire in this environment at all. Play a cut with
+a clip placed and check it tracks smoothly rather than stepping.
+
+**5. Markers and snapping against a real cut.** `M` on a hit, then drag a clip near it.
+Snapping is verified synthetically (aimed 40.35s → landed 40.00; aimed 70s → no snap).
+
+**6. Per-track in/out on a swap, by ear.** Mark a different section on each of three songs,
+place one, then press `1`/`2`/`3`. Each should enter at its own in point. Verified by
+number, not by listening.
+
+**7. Multi-clip export through ffmpeg.** Scheduling is unit-tested; only a single
+whole-track export has been rendered and inspected.
+
+**8. Portrait on a real phone.** See the note above — the waveform dock and the sheet's
+Export button must be reachable.
+
+Also worth re-running the outside review: the last one was against a build with the A/B
+chip row and the old swap behaviour, both since changed.
