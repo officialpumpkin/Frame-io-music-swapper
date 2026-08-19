@@ -21,7 +21,7 @@ npm install
 npm run dev      # UI only: /api/* 404s locally, so no Frame.io and no export
 npm run build
 npm run lint
-npm test        # proxy allowlist
+npm test        # proxy allowlist + bug-report endpoint
 ```
 
 There is no local API. The serverless functions only exist when deployed, so anything
@@ -37,12 +37,14 @@ are Vercel-login-gated, production is not).
 | `src/exportMix.js` | MP4 export: fetch source, render music offline, mux with ffmpeg.wasm |
 | `api/frameio/[...path].js` | Proxy → `https://api.frame.io/v4/*`, injects `FRAMEIO_TOKEN` |
 | `api/expand.js` | Expands `f.io/xxx` shortlinks (HEAD + follow redirect) |
+| `api/bug.js` | Takes a report from the app's bug sheet and opens a GitHub issue |
+| `src/bugLog.js` | Rolling capture of console errors, uncaught throws and app breadcrumbs |
 | `vercel.json` | Rewrite that routes nested `/api/frameio/*` paths to the catch-all |
 | `vercel.bkk` | Andy's backup of the original config. Not used. Leave it alone. |
 | `public/brand/` | Brightworks logo artwork (black on transparent; inverted in CSS for the dark UI) |
 
 Environment: `FRAMEIO_TOKEN` is set in Vercel. It is not in the repo and is not needed
-for `npm run dev`.
+for `npm run dev`. `BUG_GITHUB_TOKEN` is needed for bug reporting only — see below.
 
 ## Gotchas — these cost real time, don't rediscover them
 
@@ -86,6 +88,18 @@ warning about exactly this and it was carried as a known-benign warning — it w
 Anything that has to land on the frame — placing a clip, swapping songs mid-play — reads
 `timelineNow()`, which asks the video element directly. Using `posRef` put swaps up to
 0.27s out; measured 0.037s after.
+
+**On an iPhone the video has its own transport, and the app has to listen to it.**
+`Element.requestFullscreen` does not exist on iPhone, so `toggleFullscreen` falls back to
+`videoRef.current.webkitEnterFullscreen()` — Apple's native player, with its own scrub
+bar and play button. The app's clock used to follow the video *only when the app was the
+one moving it*: `timeupdate` returned early unless `playingRef.current` was true, and the
+rAF loop only ran during playback. So every seek made in the native player was invisible,
+`pos` went stale, and everything derived from it froze — the scrubber, the clip lane head,
+and the amber picture-playhead on the waveform. It reads exactly like a rendering bug and
+is not one. `timeupdate` is now ungated, `seeked` re-cues the music through `cueMusicTo`,
+and `play` / `pause` on the element drive the app's `playing` state. **Anything that reads
+the video's clock must assume something other than the app moved it.**
 
 **Testing in this environment.** Browser automation runs in a backgrounded tab, so video
 never loads metadata, CSS transitions stall mid-interpolation, media requests never
@@ -231,6 +245,93 @@ tool round-trip — the round-trip alone is ~10s and will otherwise read as an o
 | Swap songs mid-playback | 58.693s | 58.656s (video never paused) |
 | Drag a 110s clip across a 60.04s cut | +9.22s | +9.22s |
 
+## Levels
+
+**Two stages, and they answer different questions.** The transport's speaker button opens
+a popover holding the *master* music level — everything at once, against picture. Each
+track then carries its own trim (`track.gain`, 0–1, default 1) on its row in the tracks
+drawer. What an element actually plays at is `levelFor()`: master × that track's trim.
+
+The per-track stage exists because candidates are never mastered to the same loudness, and
+the entire point of the tool is judging them against the same picture. Without it, "which
+of these works better" is partly a question about which was mastered louder. It is per
+track for the same reason in and out marks are.
+
+`renderMusicMix` applies the trim as a gain node per source, feeding the master gain. **A
+level that is only applied on playback is a bug** — the export would quietly ignore the
+balance the arrangement was built with.
+
+Every place that assigns `.volume` goes through `levelFor` — there are eleven of them, and
+one missed site means a track jumps back to full whenever that path re-cues. The
+volume-sync effect depends on `tracks`, so dragging a trim is audible while the slider is
+moving rather than at the next cue boundary.
+
+**The master slider used to be inline in the transport, and on a phone it did not exist.**
+`@media (max-width:560px)` set `.bms-vol input[type=range] { display:none }`, and the
+speaker beside it was a decorative `<svg>` — not a button. So the row rendered, looked like
+a control, and had nothing pressable on it. It is a popover now, which also gives the
+slider a 26px touch target instead of the default ~16. **If you ever add a rule matching
+`.bms-vol input[type=range]`, remember it now matches the popover's slider too** — that is
+the same rule that caused the original bug.
+
+## How testers report bugs
+
+There is a bug icon in the top bar next to the tracks button. It opens a sheet asking
+for one line of summary, what they were doing, what happened instead, and optionally
+their name (remembered in `localStorage`, so it is typed once). Sending POSTs to
+`/api/bug`, which opens a GitHub issue on this repo labelled `bug`.
+
+**The report carries the state, which is the whole point.** A tester describing a
+failure from memory an hour later is the situation this replaces. Attached
+automatically: the asset and its ID, video dimensions and duration, the playhead and
+whether it was rolling, volume, every track with its marks and whether it was still
+analysing, every clip with its `start` / `sourceIn` / `duration`, marker positions,
+export state and error, viewport size, DPR and orientation, and the user agent. Each of
+those has been the answer to "what was it doing?" for a bug already in this document.
+
+**`src/bugLog.js` captures what the console saw**, and it is imported by `main.jsx`
+before render deliberately — a failure while ffmpeg or the video is loading happens long
+before anyone thinks to open the sheet, and those are the ones worth having. It patches
+`console.error` / `console.warn` (calling through, never swallowing) and listens for
+`error` and `unhandledrejection`, since a rejected promise reaches `console.error` in no
+browser. The buffer is a bounded ring — 80 entries, 400 chars each — so a page left open
+all afternoon cannot grow it without limit.
+
+`note()` leaves deliberate breadcrumbs, and `handleExport` is instrumented with them:
+started, each phase transition, blob size, download fired, or the thrown message. **This
+is aimed squarely at the export that fails silently** — the breadcrumbs say whether it
+died fetching, rendering, muxing, or after the blob already existed. Phase transitions
+are logged, not every progress tick, or one export fills the buffer and pushes out the
+errors that came before it.
+
+Everything sent is shown to the tester first, behind "What gets sent with this" — the
+report carries their music file names and the captured console, and they are entitled to
+read that before it leaves the machine.
+
+**Setting it up.** `api/bug.js` needs `BUG_GITHUB_TOKEN` in Vercel: a fine-grained
+personal access token scoped to *this repository only*, with **Issues: Read and write**
+and nothing else. `BUG_GITHUB_REPO` defaults to `officialpumpkin/Frame-io-music-swapper`
+and only needs setting if that changes. Without the token the endpoint answers `503` and
+the sheet tells the tester reporting is not switched on, rather than showing them a
+failure they cannot act on.
+
+**It is unauthenticated, and that is a deliberate trade.** Testers are people we handed a
+link to; making them hold a credential defeats the purpose. So the containment is POST
+only, JSON only, a 64 KB body cap and per-field caps, same-origin required whenever the
+browser declares an origin, and a per-instance rate limit — that last one bounds one warm
+serverless instance rather than the endpoint as a whole, and is documented as such in the
+file. None of it is authentication. The worst case is someone spamming issues on one repo,
+and the fix is to revoke `BUG_GITHUB_TOKEN`, which disables this endpoint and nothing
+else. That is exactly why the token is scoped to issues on one repo rather than reusing
+anything broader.
+
+Reporter text always goes into the issue inside a fence, and the fence is grown longer
+than the longest backtick run in the content — otherwise a report containing ``` closes
+the block early and restructures the issue around itself. That also keeps an `@mention`
+from notifying a real person. Titles are collapsed to a single line so a newline-stuffed
+summary cannot forge issue structure. `npm test` asserts all of this, plus that nothing
+reaches GitHub on any refusal path.
+
 ## Open items
 
 **Security — the proxy is now an allowlist. Production still isn't.** The token is
@@ -312,13 +413,21 @@ Three possible outcomes and they mean different things:
 - A green download link appears → it worked; the earlier report was the harness swallowing
   a programmatic download.
 - A red error chip appears → that text is the root cause. It could not appear before.
-- Neither, the button just returns to idle → something fails before any error path, and
-  needs instrumenting inside `exportWithMusic`.
+- Neither, the button just returns to idle → something fails before any error path.
 
-**2. Volume slider.** Reported dead to mouse and keyboard at 1440×900; a real mouse drag
-worked here (0.42 → 1.0, both `<audio>` elements followed) and nothing overlays it. Most
-likely the tester set `.value` directly, which a React controlled input reverts. Move it
-with an actual mouse and settle it.
+That third case is no longer a dead end: `handleExport` now leaves breadcrumbs through
+every phase, so open the bug sheet, expand "What gets sent with this", and read the
+captured log. The last `export:` line reached says where it stopped. **File it with the
+button** — that is what the button is for, and it beats describing it afterwards.
+
+**2. Levels, master and per track.** The old inline slider is gone — see _Levels_. On a
+phone it was genuinely dead, not mis-tested: hidden by a media query next to an icon that
+was not a button. Check the speaker opens the popover and the fader moves both `<audio>`
+elements; then set one track to ~40% and another to 100% and swap between them under the
+same picture. **Then export and confirm the trim survived the render** — that path has no
+unit test, because `exportMix.js` imports Vite-only `?url` specifiers and cannot be loaded
+in Node. Extracting `renderMusicMix` into its own module would fix that and is worth doing
+once the export bug is settled.
 
 **3. Out-trim handle.** The delete button used to cover 7 of the out handle's 9 pixels.
 Drag the right edge of a clip from its vertical midpoint, desktop and phone.
@@ -327,6 +436,11 @@ Drag the right edge of a clip from its vertical midpoint, desktop and phone.
 at 5s, in-point 30s, playhead 20s → 30% of a 150s track; at 40s → 43.33%) but never watched
 moving — `requestAnimationFrame` does not fire in this environment at all. Play a cut with
 a clip placed and check it tracks smoothly rather than stepping.
+
+**Reported frozen on a phone, and fixed** — see the iPhone note in _Gotchas_. Re-test by
+navigating from the native fullscreen player: the indicator must follow the native scrub
+bar, and the music must land in the right place when playback resumes rather than
+continuing from where it was.
 
 **5. Markers and snapping against a real cut.** `M` on a hit, then drag a clip near it.
 Snapping is verified synthetically (aimed 40.35s → landed 40.00; aimed 70s → no snap).
@@ -339,7 +453,15 @@ number, not by listening.
 whole-track export has been rendered and inspected.
 
 **8. Portrait on a real phone.** See the note above — the waveform dock and the sheet's
-Export button must be reachable.
+Export button must be reachable. The bug sheet is a bottom sheet at this width for the
+same reason and wants the same check: the Send button must clear the keyboard.
+
+**9. The bug button itself, end to end.** Untested against a deployment — it is lint-clean,
+builds, and its endpoint is unit-tested against a stubbed GitHub, but no real issue has
+been filed yet. Needs `BUG_GITHUB_TOKEN` set in Vercel first (see _How testers report
+bugs_). Send one report and check the issue arrives with the diagnostics block intact.
+Until the token is set the sheet will say reporting is not switched on, which is the
+expected answer and not a bug.
 
 Also worth re-running the outside review: the last one was against a build with the A/B
 chip row and the old swap behaviour, both since changed.

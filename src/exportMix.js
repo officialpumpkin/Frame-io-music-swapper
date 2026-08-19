@@ -150,7 +150,15 @@ export async function renderMusicMix({ tracks, clips = [], activeTrackId, durati
     }
     const src = ctx.createBufferSource();
     src.buffer = buffer;
-    src.connect(master);
+    // Each track carries its own level, so a song mastered hot and a song
+    // mastered quiet can sit at the same place under the same picture. The
+    // master fader scales all of them; this stage is the per-track trim, and
+    // it has to be applied here too or the export ignores the balance the
+    // arrangement was built with.
+    const trim = ctx.createGain();
+    trim.gain.value = typeof s.track.gain === "number" ? s.track.gain : 1;
+    src.connect(trim);
+    trim.connect(master);
     // Play from `sourceIn` seconds into the song, for as long as the clip
     // occupies the timeline — no more of the song than was marked.
     const offset = Math.min(Math.max(0, s.sourceIn), Math.max(0, buffer.duration - 0.01));

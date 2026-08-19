@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
 import { exportWithMusic, exportFileName, downloadBlob } from "./exportMix.js";
+import { note, formatLog } from "./bugLog.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -398,8 +399,28 @@ const CSS = `
 .bms-ghosticon:hover { background:rgba(255,255,255,.16); }
 .bms-ghosticon svg { width:17px; height:17px; display:block; }
 .bms-time { font-size:11px; color:rgba(232,232,242,.7); white-space:nowrap; }
-.bms-vol { display:flex; align-items:center; gap:7px; margin-left:auto; }
-.bms-vol input[type=range] { width:82px; cursor:pointer; accent-color:var(--accent); }
+.bms-vol { display:flex; align-items:center; gap:7px; margin-left:auto; position:relative; }
+/* Opens upward: the transport sits at the bottom of the stage, so a popover
+   below it would be off screen. */
+.bms-volpop {
+  position:absolute; bottom:calc(100% + 8px); right:0; z-index:35;
+  width:216px; padding:11px; border-radius:11px;
+  background:var(--surface-2); border:1px solid var(--line);
+  box-shadow:0 14px 34px rgba(0,0,0,.55);
+  display:flex; flex-direction:column; gap:9px;
+}
+.bms-volpop-head { display:flex; align-items:baseline; gap:8px; }
+.bms-volpop-label { font-size:9.5px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
+.bms-volpop-val { font-size:10px; color:var(--accent); margin-left:auto; }
+/* 26px of height, not the default ~16 — this is dragged with a thumb. */
+.bms-volpop-range { width:100%; height:26px; cursor:pointer; accent-color:var(--accent); }
+.bms-volpop-note { font-size:9px; color:var(--dim); line-height:1.6; }
+
+/* Per-track trim, on the track's own row in the drawer. */
+.bms-tgain { display:flex; align-items:center; gap:8px; margin-top:9px; }
+.bms-tgain svg { width:13px; height:13px; flex-shrink:0; color:var(--dim); }
+.bms-tgain input[type=range] { flex:1; min-width:0; height:22px; cursor:pointer; }
+.bms-tgain-val { font-size:9.5px; color:var(--dim); width:24px; text-align:right; flex-shrink:0; }
 
 /* Folder picker */
 .bms-picker { position:absolute; inset:0; background:rgba(8,8,13,.96); display:flex; flex-direction:column; z-index:20; }
@@ -627,6 +648,48 @@ const CSS = `
 .bms-prog-bar { height:100%; background:var(--green); transition:width .2s; }
 .bms-note { font-size:9.5px; color:var(--dim); margin-top:8px; line-height:1.65; }
 
+/* ── Bug report sheet ────────────────────────────────────────────────────── */
+/* Absolute inside .bms, never fixed — same reason as the tracks sheet: fixed
+   resolves against the layout viewport, so on a phone in portrait the send
+   button ends up under the browser chrome. */
+.bms-modal {
+  position:absolute; inset:0; z-index:60; display:grid; place-items:center;
+  background:rgba(0,0,0,.62); padding:16px;
+}
+.bms-bug {
+  width:min(560px, 100%); max-height:100%; display:flex; flex-direction:column;
+  background:var(--surface); border:1px solid var(--line); border-radius:14px;
+  box-shadow:0 24px 60px rgba(0,0,0,.6); overflow:hidden;
+}
+.bms-bug-head {
+  display:flex; align-items:center; gap:9px; padding:0 10px 0 14px; height:50px;
+  border-bottom:1px solid var(--line); flex-shrink:0;
+}
+.bms-bug-body { padding:14px; overflow-y:auto; display:flex; flex-direction:column; gap:12px; }
+.bms-bug-field { display:flex; flex-direction:column; gap:5px; }
+.bms-bug-label { font-size:10.5px; color:var(--muted); font-weight:500; }
+.bms-bug-opt { color:var(--dim); font-weight:400; }
+/* Prose, not a URL — the monospace face inherited from .bms-input reads badly
+   for a sentence and encourages terse reports. */
+.bms-bug-input, .bms-bug-area {
+  width:100%; font-family:'Inter',system-ui,-apple-system,sans-serif; font-size:12.5px;
+}
+.bms-bug-area { resize:vertical; line-height:1.6; padding:9px 11px; }
+.bms-bug-toggle {
+  background:none; border:none; color:var(--dim); font-size:10px;
+  text-align:left; cursor:pointer; padding:0;
+}
+.bms-bug-toggle:hover { color:var(--muted); }
+.bms-bug-pre {
+  background:var(--bg); border:1px solid var(--line); border-radius:8px;
+  padding:10px; font-size:9.5px; line-height:1.55; color:var(--muted);
+  max-height:190px; overflow:auto; white-space:pre-wrap; word-break:break-word;
+}
+.bms-bug-actions { display:flex; gap:8px; justify-content:flex-end; padding-top:2px; }
+.bms-bug-done-1 { font-size:13px; font-weight:600; color:var(--green); }
+.bms-bug-done-2 { font-size:11px; color:var(--muted); line-height:1.7; margin-top:6px; }
+.bms-bug-link { display:inline-block; margin-top:10px; font-size:11px; color:var(--accent); }
+
 .bms ::-webkit-scrollbar { width:4px; height:4px; }
 .bms ::-webkit-scrollbar-thumb { background:#26263A; border-radius:2px; }
 
@@ -659,6 +722,14 @@ const CSS = `
   .bms-scrim { display:block; position:absolute; inset:0; background:rgba(0,0,0,.55); z-index:39; }
   .bms-dock-body { max-height:30dvh; }
   .bms-dock-hint { display:none; }
+
+  /* The report becomes a bottom sheet too, so the fields sit above the keyboard
+     rather than being centred behind it. */
+  .bms-modal { padding:0; place-items:end stretch; }
+  .bms-bug {
+    width:100%; max-height:92dvh; border-radius:18px 18px 0 0; border-bottom:none;
+    padding-bottom:env(safe-area-inset-bottom);
+  }
 }
 
 @media (max-width:560px) {
@@ -666,7 +737,10 @@ const CSS = `
   /* The loaded video is its own confirmation at this width. */
   .bms-chip-asset { display:none; }
   .bms-title { font-size:10px; letter-spacing:.1em; }
-  .bms-vol input[type=range] { display:none; }
+  /* The slider is in a popover now, so it must NOT be hidden here — this rule
+     used to match the inline one and was why a phone had no volume control at
+     all. The popover widens instead of disappearing. */
+  .bms-volpop { width:min(74vw, 260px); }
   .bms-transport { gap:7px; }
 
   .bms-src-read .bms-src-dim { display:block; margin-left:0; }
@@ -748,6 +822,36 @@ export default function MusicLayerV3() {
   const [exportState, setExportState] = useState(null); // { phase, progress }
   const [exportErr, setExportErr]     = useState("");
   const [exportReady, setExportReady] = useState(null);
+
+  // ── Music level
+  const [volOpen, setVolOpen] = useState(false);
+  // The level to come back to when unmuting, so mute is reversible without
+  // making the viewer guess where the fader was.
+  const preMuteRef = useRef(0.8);
+  const volRowRef  = useRef(null);
+
+  // ── Bug reporting
+  //
+  // The people finding the bugs are testers with a link, not developers with a
+  // console. The sheet asks for two sentences and attaches the state the app
+  // was actually in, so a report arrives with its evidence rather than as a
+  // description someone has to reproduce from.
+  const [bugOpen, setBugOpen]             = useState(false);
+  const [bugSummary, setBugSummary]       = useState("");
+  const [bugDoing, setBugDoing]           = useState("");
+  const [bugHappened, setBugHappened]     = useState("");
+  const [bugSending, setBugSending]       = useState(false);
+  const [bugErr, setBugErr]               = useState("");
+  const [bugFiled, setBugFiled]           = useState(null);   // { url, number }
+  // Holds the rendered diagnostics while the panel is open, null when closed.
+  // It is a snapshot taken in the click handler rather than built during
+  // render, because gathering it reads the video element ref.
+  const [bugDetail, setBugDetail]         = useState(null);
+  // Remembered so a tester filing their fourth report of the session does not
+  // type their name a fourth time.
+  const [bugReporter, setBugReporter] = useState(
+    () => { try { return localStorage.getItem("bms-reporter") || ""; } catch { return ""; } }
+  );
 
   // ── Shell / chrome
   const [drawerOpen, setDrawerOpen]     = useState(false);
@@ -877,19 +981,38 @@ export default function MusicLayerV3() {
     v.src = currentAsset.url;
     v.crossOrigin = "anonymous";
     const onMeta = () => setDur(v.duration || 0);
-    // Read through the ref, not the captured value: this effect is keyed on the
-    // asset, so a `playing` closed over here would still be false from when the
-    // video loaded — and the playhead would never advance during playback.
+    // Follow the element whenever its clock moves, not only while the app is
+    // the one moving it.
+    //
+    // This used to return early unless playingRef was true, which meant `pos`
+    // only tracked seeks the app itself originated. Anything else left it
+    // stale and every readout derived from it froze: the scrubber, the clip
+    // lane head, and the amber picture-playhead on the waveform. On an iPhone
+    // that is the normal case, not an edge one — Element.requestFullscreen
+    // does not exist there, so toggleFullscreen falls back to
+    // webkitEnterFullscreen, which hands the viewer Apple's own player with
+    // its own scrub bar. Every seek made in it was invisible to the app.
+    //
+    // Reading currentTime is cheap and it is the authority, so there is no
+    // reason to gate it. The stale-closure rule from before still stands:
+    // anything conditional in here reads a ref, never a captured value.
     const onTime = () => {
-      if (!playingRef.current) return;
       posRef.current = v.currentTime;
       setPos(v.currentTime);
     };
+    // The native player's transport is also the app's transport while it is up.
+    const onPlayEvt  = () => setPlaying(true);
+    const onPauseEvt = () => setPlaying(false);
+
     v.addEventListener("loadedmetadata", onMeta);
     v.addEventListener("timeupdate", onTime);
+    v.addEventListener("play", onPlayEvt);
+    v.addEventListener("pause", onPauseEvt);
     return () => {
       v.removeEventListener("loadedmetadata", onMeta);
       v.removeEventListener("timeupdate", onTime);
+      v.removeEventListener("play", onPlayEvt);
+      v.removeEventListener("pause", onPauseEvt);
     };
   }, [currentAsset?.url]);
 
@@ -905,6 +1028,46 @@ export default function MusicLayerV3() {
     return null;
   }, []);
 
+  // The level one track should play at: the master fader scaled by that track's
+  // own trim. Two candidates are rarely mastered to the same loudness, and the
+  // point of the tool is hearing them against the same picture — so comparing
+  // them fairly means a per-track balance, for the same reason in and out marks
+  // are per track. Takes anything carrying a `gain`, which is both a track and
+  // a timeline cue.
+  const levelFor = useCallback((carrier) => {
+    const gain = typeof carrier?.gain === "number" ? carrier.gain : 1;
+    return Math.max(0, Math.min(1, volRef.current * gain));
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    setVol(prev => {
+      if (prev > 0) { preMuteRef.current = prev; return 0; }
+      return preMuteRef.current || 0.8;
+    });
+  }, []);
+
+  // Dismiss the level popover on an outside press or Escape. Pointerdown, not
+  // click, so it closes on the same gesture that starts an interaction
+  // elsewhere rather than a frame later.
+  useEffect(() => {
+    if (!volOpen) return;
+    const onDown = (e) => { if (!volRowRef.current?.contains(e.target)) setVolOpen(false); };
+    const onKey  = (e) => { if (e.key === "Escape") setVolOpen(false); };
+    window.addEventListener("pointerdown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [volOpen]);
+
+  // Trim one track. The volume-sync effect below re-levels whatever is playing
+  // as soon as this lands, so the change is heard while the slider is moving.
+  const setTrackGain = useCallback((id, gain) => {
+    const g = Math.max(0, Math.min(1, gain));
+    setTracks(prev => prev.map(t => (t.id === id ? { ...t, gain: g } : t)));
+  }, []);
+
   // What the timeline audio element should be doing at a given position:
   // the file to play and where in that file to be, or null for silence.
   const timelineCueAt = useCallback((time) => {
@@ -915,11 +1078,11 @@ export default function MusicLayerV3() {
       if (!c) return null;
       const track = found.find(t => t.id === c.trackId);
       if (!track) return null;
-      return { url: track.url, at: c.sourceIn + (time - c.start), clipId: c.id, trackId: track.id };
+      return { url: track.url, at: c.sourceIn + (time - c.start), clipId: c.id, trackId: track.id, gain: track.gain };
     }
     const track = found.find(t => t.id === activeTrackIdRef.current) || found[0];
     if (!track) return null;
-    return { url: track.url, at: time, clipId: null, trackId: track.id };
+    return { url: track.url, at: time, clipId: null, trackId: track.id, gain: track.gain };
   }, [clipAt]);
 
   // ── Source-monitor transport (song only — picture never moves)
@@ -946,14 +1109,14 @@ export default function MusicLayerV3() {
       const a   = audioRef.current;
       if (cue && a) {
         if (a.src !== cue.url) a.src = cue.url;
-        a.volume = vol;
+        a.volume = levelFor(cue);
         seekAudioEl(a, cue.at);
         a.play().catch(() => {});
       } else {
         a?.pause();
       }
     }
-  }, [playing, pos, vol, timelineCueAt, stopSource]);
+  }, [playing, pos, timelineCueAt, stopSource, levelFor]);
 
   const handleStop = useCallback(() => {
     const v = videoRef.current;
@@ -1005,11 +1168,15 @@ export default function MusicLayerV3() {
     return () => cancelAnimationFrame(id);
   }, [playing, currentAsset]);
 
-  // Volume sync
+  // Volume sync — the master fader or a track's own trim moved. Both elements
+  // are re-levelled from whatever each is currently playing, so dragging a
+  // track's slider is audible immediately rather than at the next cue.
   useEffect(() => {
-    if (audioRef.current)    audioRef.current.volume    = vol;
-    if (srcAudioRef.current) srcAudioRef.current.volume = vol;
-  }, [vol]);
+    const a = audioRef.current;
+    if (a) a.volume = levelFor(timelineCueAt(posRef.current));
+    const s = srcAudioRef.current;
+    if (s) s.volume = levelFor(tracks.find(t => t.id === activeTrackId));
+  }, [vol, tracks, activeTrackId, timelineCueAt, levelFor]);
 
   // Auto-route the timeline audio as the playhead crosses clip boundaries.
   useEffect(() => {
@@ -1022,7 +1189,7 @@ export default function MusicLayerV3() {
     if (a.dataset.clipId !== String(cue.clipId)) {
       a.dataset.clipId = String(cue.clipId);
       a.src            = cue.url;
-      a.volume         = volRef.current;
+      a.volume         = levelFor(cue);
       seekAudioEl(a, cue.at);
       a.play().catch(() => {});
     }
@@ -1036,6 +1203,41 @@ export default function MusicLayerV3() {
     return v && v.readyState >= 1 && isFinite(v.currentTime) ? v.currentTime : posRef.current;
   }, []);
 
+  // Put the timeline music element where a given point in the cut says it
+  // should be. Shared by the app's own seek and by seeks arriving from the
+  // native player, which must drag the music with them or picture and music
+  // come back in different places.
+  const cueMusicTo = useCallback((t) => {
+    const a = audioRef.current;
+    if (!a) return;
+    const cue = timelineCueAt(t);
+    if (!cue) { a.pause(); return; }
+    if (a.src !== cue.url) a.src = cue.url;
+    a.dataset.clipId = String(cue.clipId);
+    a.volume         = levelFor(cue);
+    seekAudioEl(a, cue.at);
+    if (playingRef.current) a.play().catch(() => {});
+  }, [timelineCueAt, levelFor]);
+
+  // A completed seek re-cues the music, and this is registered apart from the
+  // asset effect above deliberately: that one assigns v.src, so re-running it
+  // whenever cueMusicTo changes would reload the video mid-playback. This one
+  // only adds a listener, so it can depend on the cue function honestly.
+  //
+  // It is `seeked`, not `timeupdate` — timeupdate fires several times a second
+  // and re-cueing on each would restart the element constantly.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !currentAsset?.url) return;
+    const onSeeked = () => {
+      posRef.current = v.currentTime;
+      setPos(v.currentTime);
+      cueMusicTo(v.currentTime);
+    };
+    v.addEventListener("seeked", onSeeked);
+    return () => v.removeEventListener("seeked", onSeeked);
+  }, [currentAsset?.url, cueMusicTo]);
+
   // ── Seek (timeline)
   const seekTo = useCallback((t) => {
     const s = Math.max(0, Math.min(t, durRef.current || 300));
@@ -1046,17 +1248,8 @@ export default function MusicLayerV3() {
     const v = videoRef.current;
     if (v) v.currentTime = s;
 
-    const a   = audioRef.current;
-    const cue = timelineCueAt(s);
-    if (a) {
-      if (!cue) { a.pause(); return; }
-      if (a.src !== cue.url) a.src = cue.url;
-      a.dataset.clipId = String(cue.clipId);
-      a.volume         = volRef.current;
-      seekAudioEl(a, cue.at);
-      if (playingRef.current) a.play().catch(() => {});
-    }
-  }, [timelineCueAt]);
+    cueMusicTo(s);
+  }, [cueMusicTo]);
 
   // ── Source monitor
   //
@@ -1072,10 +1265,10 @@ export default function MusicLayerV3() {
     const a = srcAudioRef.current;
     if (a && track) {
       if (a.src !== track.url) a.src = track.url;
-      a.volume = volRef.current;
+      a.volume = levelFor(track);
       seekAudioEl(a, s);
     }
-  }, []);
+  }, [levelFor]);
 
   // Start auditioning from a point in the song. `trackOverride` covers the case
   // where the track is being selected in the same gesture and the ref that
@@ -1097,7 +1290,7 @@ export default function MusicLayerV3() {
     srcPosRef.current = s;
 
     if (a.src !== track.url) a.src = track.url;
-    a.volume = volRef.current;
+    a.volume = levelFor(track);
     seekAudioEl(a, s);
     a.play().catch(() => {});
     setSrcPlaying(true);
@@ -1116,7 +1309,7 @@ export default function MusicLayerV3() {
       srcRafRef.current = requestAnimationFrame(tick);
     };
     srcRafRef.current = requestAnimationFrame(tick);
-  }, []);
+  }, [levelFor]);
 
   const toggleSource = useCallback(() => {
     if (srcPlayingRef.current) { stopSource(); return; }
@@ -1399,11 +1592,11 @@ export default function MusicLayerV3() {
     const a = srcAudioRef.current;
     if (a) {
       if (a.src !== newTrack.url) a.src = newTrack.url;
-      a.volume = volRef.current;
+      a.volume = levelFor(newTrack);
       seekAudioEl(a, at);
       if (srcPlayingRef.current) a.play().catch(() => {});
     }
-  }, [stopSource]);
+  }, [stopSource, levelFor]);
 
   // Put a different song under the picture. The clip keeps its place in the cut
   // and the picture never stops, but what plays inside it comes from the new
@@ -1453,12 +1646,12 @@ export default function MusicLayerV3() {
         const into = swapped ? swapped.sourceIn + (at - swapped.start) : at;
         a.dataset.clipId = String(swapped ? swapped.id : null);
         a.src            = track.url;
-        a.volume         = volRef.current;
+        a.volume         = levelFor(track);
         seekAudioEl(a, clamp(into, 0, track.audioDuration || 0));
         a.play().catch(() => {});
       }
     }
-  }, [selectTrack, clipAt, selectedClipId, timelineNow]);
+  }, [selectTrack, clipAt, selectedClipId, timelineNow, levelFor]);
 
   // Clicking another track's waveform auditions it from that point. If picture
   // is rolling, it swaps under the cut instead — you asked to hear the
@@ -1536,6 +1729,8 @@ export default function MusicLayerV3() {
       analysing: true,
       size: f.size > 1048576 ? `${(f.size/1048576).toFixed(1)} MB` : `${(f.size/1024).toFixed(0)} KB`,
       srcIn: null, srcOut: null,
+      // Per-track trim, multiplied by the master fader. 1 is "as supplied".
+      gain: 1,
     }));
 
     const isFirstBatch = tracks.length === 0;
@@ -1547,11 +1742,11 @@ export default function MusicLayerV3() {
       srcPosRef.current = 0;
       if (audioRef.current) {
         audioRef.current.src    = newTracks[0].url;
-        audioRef.current.volume = vol;
+        audioRef.current.volume = levelFor(newTracks[0]);
       }
       if (srcAudioRef.current) {
         srcAudioRef.current.src    = newTracks[0].url;
-        srcAudioRef.current.volume = vol;
+        srcAudioRef.current.volume = levelFor(newTracks[0]);
       }
     }
 
@@ -1564,7 +1759,7 @@ export default function MusicLayerV3() {
       ));
       if (i === 0 && duration > 0) setDur(prev => prev || duration);
     });
-  }, [vol, tracks.length]);
+  }, [tracks.length, levelFor]);
 
   const removeTrack = useCallback((id, e) => {
     e.stopPropagation();
@@ -1594,6 +1789,15 @@ export default function MusicLayerV3() {
     videoRef.current?.pause();
     audioRef.current?.pause();
     setExportReady(prev => { if (prev) URL.revokeObjectURL(prev.url); return null; });
+    // Breadcrumbs, because the open bug is an export that reports no error and
+    // produces no file. Knowing which of these was the last one reached says
+    // whether it died fetching, rendering, muxing, or after the blob existed —
+    // and a report filed from the sheet carries them.
+    note(`export: started · ${clips.length} clip(s) · ${tracks.length} track(s)`);
+    // onPhase also carries progress, so it fires many times per phase. Only the
+    // transitions are logged — otherwise one export fills the whole buffer and
+    // pushes out the errors that came before it.
+    let lastPhase = null;
     try {
       const blob = await exportWithMusic({
         videoUrl:      currentAsset.url,
@@ -1602,21 +1806,141 @@ export default function MusicLayerV3() {
         activeTrackId,
         volume:        vol,
         durationSec:   dur || videoRef.current?.duration,
-        onPhase:       setExportState,
+        onPhase:       (p) => {
+          if (p?.phase && p.phase !== lastPhase) { lastPhase = p.phase; note(`export: ${p.phase}`); }
+          setExportState(p);
+        },
       });
+      note(`export: blob ready · ${blob.size} bytes · ${blob.type || "no type"}`);
       const name = exportFileName(currentAsset.name);
       // Keep the file reachable as a real link as well as firing the download.
       // A scripted a.click() is silently ignored in some browsers and in most
       // automated ones, and that looked exactly like "the export did nothing".
       setExportReady({ url: URL.createObjectURL(blob), name, size: blob.size });
       downloadBlob(blob, name);
+      note(`export: download fired · ${name}`);
     } catch (e) {
+      note(`export: threw · ${e?.message || String(e)}`);
       setExportErr(e.message || String(e));
     }
     setExportState(null);
   }, [currentAsset, tracks, clips, activeTrackId, vol, dur, exportState]);
 
   useEffect(() => () => { if (exportReady) URL.revokeObjectURL(exportReady.url); }, [exportReady]);
+
+  // ── Bug reporting
+  //
+  // Gathered fresh at send time. Every line here has been the answer to a "what
+  // was it doing?" at some point: the asset and its dimensions (the vertical
+  // video bug), the viewport (the portrait bug), the clip list (the clamp bug),
+  // and the captured console (the export that fails silently).
+  const buildDiagnostics = useCallback(() => {
+    const v = videoRef.current;
+    const secs = (n) => (typeof n === "number" && isFinite(n) ? `${n.toFixed(2)}s` : "—");
+
+    const trackLines = tracks.length
+      ? tracks.map((t, i) => `  ${i + 1}. ${t.name} · ${t.size} · ${secs(t.audioDuration)} · trim ${Math.round((t.gain ?? 1) * 100)}%` +
+          `${t.srcIn != null || t.srcOut != null ? ` · marked in ${secs(t.srcIn)} out ${secs(t.srcOut)}` : " · no marks"}` +
+          `${t.id === activeTrackId ? " · ACTIVE" : ""}${t.analysing ? " · still analysing" : ""}`)
+      : ["  (none)"];
+
+    const clipLines = clips.length
+      ? clips.map((c, i) => {
+          const t = tracks.find(x => x.id === c.trackId);
+          return `  ${i + 1}. ${t?.name || "unknown track"} · at ${secs(c.start)} · from ${secs(c.sourceIn)} · runs ${secs(c.duration)}`;
+        })
+      : ["  (none placed — the active track would run from the top)"];
+
+    return [
+      `Page        ${location.pathname}${location.search}`,
+      `Time        ${new Date().toISOString()}`,
+      `Browser     ${navigator.userAgent}`,
+      `Viewport    ${window.innerWidth}×${window.innerHeight} css · dpr ${window.devicePixelRatio} · screen ${screen.width}×${screen.height}`,
+      `Orientation ${window.innerWidth >= window.innerHeight ? "landscape" : "portrait"}${document.fullscreenElement ? " · fullscreen" : ""}`,
+      "",
+      `Asset       ${currentAsset ? currentAsset.name : "(none loaded)"}`,
+      `Asset id    ${currentAsset?.id || "—"}`,
+      `Dimensions  ${videoDims ? `${videoDims.w}×${videoDims.h}` : "—"}`,
+      `Duration    ${secs(dur)}${v?.duration ? ` (element reports ${secs(v.duration)})` : ""}`,
+      `Playhead    ${secs(pos)}${playing ? " · playing" : " · paused"}${v ? ` · element at ${secs(v.currentTime)}` : ""}`,
+      `Master vol  ${vol.toFixed(2)}${vol === 0 ? " (muted)" : ""}`,
+      `Markers     ${markers.length ? markers.map(m => secs(m)).join(", ") : "(none)"}`,
+      "",
+      `Tracks (${tracks.length})`,
+      ...trackLines,
+      "",
+      `Clips (${clips.length})`,
+      ...clipLines,
+      "",
+      `Export      ${exportState ? `running — ${exportState.phase}` : "idle"}`,
+      `Export err  ${exportErr || "(none)"}`,
+      `Export file ${exportReady ? `${exportReady.name} · ${exportReady.size} bytes` : "(none produced this session)"}`,
+      "",
+      "Captured log",
+      formatLog(),
+    ].join("\n");
+  }, [tracks, clips, markers, activeTrackId, currentAsset, videoDims,
+      dur, pos, playing, vol, exportState, exportErr, exportReady]);
+
+  const closeBug = useCallback(() => {
+    setBugOpen(false);
+    setBugDetail(null);
+  }, []);
+
+  const openBug = useCallback(() => {
+    // A fresh sheet each time — leaving the previous report's success notice up
+    // makes the next one look like it sent when it has not been written yet.
+    setBugErr("");
+    setBugFiled(null);
+    setBugSummary("");
+    setBugDoing("");
+    setBugHappened("");
+    setBugDetail(null);
+    setBugOpen(true);
+  }, []);
+
+  const submitBug = useCallback(async () => {
+    if (bugSending) return;
+    if (!bugSummary.trim() && !bugHappened.trim()) {
+      setBugErr("Add a line about what went wrong before sending.");
+      return;
+    }
+    setBugSending(true);
+    setBugErr("");
+    try { localStorage.setItem("bms-reporter", bugReporter); } catch { /* private mode */ }
+
+    try {
+      const res = await fetch("/api/bug", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          summary:     bugSummary,
+          doing:       bugDoing,
+          happened:    bugHappened,
+          reporter:    bugReporter,
+          diagnostics: buildDiagnostics(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || `${res.status} ${res.statusText}`);
+      setBugFiled({ url: data.url, number: data.number });
+    } catch (e) {
+      // The report is the tester's only way to tell us anything, so a failure
+      // here has to say so plainly rather than closing the sheet.
+      setBugErr(e.message || String(e));
+    }
+    setBugSending(false);
+  }, [bugSending, bugSummary, bugDoing, bugHappened, bugReporter, buildDiagnostics]);
+
+  // Escape closes the sheet. It is registered here rather than in the global
+  // shortcut handler because that one ignores events from a field, and this
+  // sheet is nothing but fields.
+  useEffect(() => {
+    if (!bugOpen) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); closeBug(); } };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [bugOpen, closeBug]);
 
   // ── Derived
   const clipCounts = useMemo(() => {
@@ -1689,6 +2013,22 @@ export default function MusicLayerV3() {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5" />
                 <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5" />
+              </svg>
+            </button>
+
+            {/* Reporting sits in the bar rather than behind a menu: a tester
+                who has to go looking for it writes the report later, from
+                memory, without the state that made it worth having. */}
+            <button
+              className={`bms-icon bms-bug-btn${bugOpen ? " on" : ""}`}
+              onClick={openBug}
+              aria-label="Report a bug"
+              title="Report a bug"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M8 6a4 4 0 0 1 8 0" />
+                <rect x="6" y="8" width="12" height="12" rx="6" />
+                <path d="M3 12h3M18 12h3M4 17.5l2.5-1.5M17.5 16l2.5 1.5M4 7.5L6.5 9M17.5 9L20 7.5" />
               </svg>
             </button>
 
@@ -1916,17 +2256,49 @@ export default function MusicLayerV3() {
                     {fmt(pos, DISPLAY_FPS)} / {fmt(effectiveDur, DISPLAY_FPS)}
                   </span>
 
-                  <div className="bms-vol">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                         strokeWidth="2" strokeLinecap="round" style={{ color: "#9A9AB8" }}>
-                      <path d="M11 5L6 9H3v6h3l5 4z" />
-                      <path d="M16 9a4 4 0 0 1 0 6" />
-                    </svg>
-                    <input
-                      type="range" min="0" max="1" step="0.01" value={vol}
-                      onChange={e => setVol(parseFloat(e.target.value))}
-                      aria-label="Music volume"
-                    />
+                  {/* The speaker is a real button, and the slider lives in a
+                      popover rather than inline. Inline, it was hidden below
+                      560px next to a decorative icon, which left a phone with
+                      nothing to press — the control looked present and did
+                      nothing at all. */}
+                  <div className="bms-vol" ref={volRowRef}>
+                    <button
+                      className={`bms-ghosticon${volOpen ? " on" : ""}`}
+                      onClick={() => setVolOpen(o => !o)}
+                      aria-label="Music level"
+                      aria-expanded={volOpen}
+                      title="Music level"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                           strokeWidth="2" strokeLinecap="round">
+                        <path d="M11 5L6 9H3v6h3l5 4z" />
+                        {vol === 0
+                          ? <path d="M17 9.5l4 5M21 9.5l-4 5" />
+                          : <path d="M16 9a4 4 0 0 1 0 6" />}
+                      </svg>
+                    </button>
+
+                    {volOpen && (
+                      <div className="bms-volpop">
+                        <div className="bms-volpop-head">
+                          <span className="bms-volpop-label">Music level</span>
+                          <span className="bms-volpop-val mono">{Math.round(vol * 100)}</span>
+                        </div>
+                        <input
+                          className="bms-volpop-range"
+                          type="range" min="0" max="1" step="0.01" value={vol}
+                          onChange={e => setVol(parseFloat(e.target.value))}
+                          aria-label="Music level"
+                        />
+                        <button className="bms-srcbtn quiet" onClick={toggleMute}>
+                          {vol === 0 ? "Unmute" : "Mute"}
+                        </button>
+                        <div className="bms-volpop-note">
+                          Sets every track at once. A single track is trimmed on its
+                          own row in the tracks panel.
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <button className="bms-ghosticon" onClick={toggleFullscreen}
@@ -2183,6 +2555,33 @@ export default function MusicLayerV3() {
                             <button className="bms-rm" onClick={e => removeTrack(t.id, e)} aria-label={`Remove ${t.name}`}>×</button>
                           </div>
 
+                          {/* Per-track trim. It lives on the row rather than in
+                              the transport because it belongs to the song, not
+                              to the session — two candidates are rarely
+                              mastered to the same loudness, and comparing them
+                              honestly against the same picture means levelling
+                              them first. Clicks are stopped so dragging the
+                              slider does not also select the track. */}
+                          <div
+                            className="bms-tgain"
+                            onClick={e => e.stopPropagation()}
+                            onPointerDown={e => e.stopPropagation()}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 strokeWidth="2" strokeLinecap="round">
+                              <path d="M11 5L6 9H3v6h3l5 4z" />
+                              <path d="M16 9a4 4 0 0 1 0 6" />
+                            </svg>
+                            <input
+                              type="range" min="0" max="1" step="0.01"
+                              value={t.gain ?? 1}
+                              style={{ accentColor: t.color }}
+                              onChange={e => setTrackGain(t.id, parseFloat(e.target.value))}
+                              aria-label={`Level for ${t.name}`}
+                            />
+                            <span className="bms-tgain-val mono">{Math.round((t.gain ?? 1) * 100)}</span>
+                          </div>
+
                           {clipCounts[t.id] > 0 && (
                             <div className="bms-io">
                               {clipCounts[t.id]} clip{clipCounts[t.id] > 1 ? "s" : ""} on the timeline
@@ -2238,6 +2637,114 @@ export default function MusicLayerV3() {
         </div>
 
         {drawerOpen && <div className="bms-scrim" onClick={closeDrawer} />}
+
+        {/* ── Bug report sheet ── */}
+        {bugOpen && (
+          <div className="bms-modal" onClick={closeBug}>
+            <div className="bms-bug" onClick={e => e.stopPropagation()} role="dialog" aria-label="Report a bug">
+              <div className="bms-bug-head">
+                <span className="bms-aside-title">Report a bug</span>
+                <button className="bms-icon" style={{ marginLeft: "auto" }} onClick={closeBug} aria-label="Close">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {bugFiled ? (
+                // Filed. The tester gets the issue number so they can refer to
+                // it, and a link in case they want to add a screenshot.
+                <div className="bms-bug-body">
+                  <div className="bms-bug-done">
+                    <div className="bms-bug-done-1">Sent — thank you.</div>
+                    <div className="bms-bug-done-2">
+                      Filed as issue #{bugFiled.number}. Everything the app knew about the
+                      session went with it, so there is nothing else you need to do.
+                    </div>
+                    {bugFiled.url && (
+                      <a className="bms-bug-link" href={bugFiled.url} target="_blank" rel="noreferrer">
+                        Open it on GitHub — add a screenshot if you have one
+                      </a>
+                    )}
+                  </div>
+                  <div className="bms-bug-actions">
+                    <button className="bms-btn bms-btn-ghost" onClick={closeBug}>Close</button>
+                    <button className="bms-btn bms-btn-amber" onClick={openBug}>Report another</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="bms-bug-body">
+                  <label className="bms-bug-field">
+                    <span className="bms-bug-label">In one line, what went wrong?</span>
+                    <input
+                      className="bms-input bms-bug-input"
+                      autoFocus
+                      placeholder="Export finished but no file appeared"
+                      value={bugSummary}
+                      onChange={e => setBugSummary(e.target.value)}
+                    />
+                  </label>
+
+                  <label className="bms-bug-field">
+                    <span className="bms-bug-label">What were you doing?</span>
+                    <textarea
+                      className="bms-input bms-bug-area"
+                      rows={3}
+                      placeholder="Loaded the Carrera cut, placed two clips, pressed Export MP4."
+                      value={bugDoing}
+                      onChange={e => setBugDoing(e.target.value)}
+                    />
+                  </label>
+
+                  <label className="bms-bug-field">
+                    <span className="bms-bug-label">What happened instead?</span>
+                    <textarea
+                      className="bms-input bms-bug-area"
+                      rows={3}
+                      placeholder="The button went back to idle after a minute and nothing arrived in Downloads."
+                      value={bugHappened}
+                      onChange={e => setBugHappened(e.target.value)}
+                    />
+                  </label>
+
+                  <label className="bms-bug-field">
+                    <span className="bms-bug-label">Your name <span className="bms-bug-opt">optional</span></span>
+                    <input
+                      className="bms-input bms-bug-input"
+                      placeholder="So we know who to ask"
+                      value={bugReporter}
+                      onChange={e => setBugReporter(e.target.value)}
+                    />
+                  </label>
+
+                  {/* Shown, not hidden: the report carries file names and the
+                      captured console, and a tester is entitled to read that
+                      before it is sent anywhere. */}
+                  <button
+                    className="bms-bug-toggle"
+                    onClick={() => setBugDetail(bugDetail === null ? buildDiagnostics() : null)}
+                  >
+                    {bugDetail !== null ? "▾" : "▸"} What gets sent with this
+                  </button>
+                  {bugDetail !== null && (
+                    <pre className="bms-bug-pre mono">{bugDetail}</pre>
+                  )}
+
+                  {bugErr && (
+                    <div className="bms-chip bms-chip-err" style={{ display: "block", marginTop: 4 }}>{bugErr}</div>
+                  )}
+
+                  <div className="bms-bug-actions">
+                    <button className="bms-btn bms-btn-ghost" onClick={closeBug} disabled={bugSending}>Cancel</button>
+                    <button className="bms-btn bms-btn-amber" onClick={submitBug} disabled={bugSending}>
+                      {bugSending ? "Sending…" : "Send report"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </>
   );
