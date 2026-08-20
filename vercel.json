@@ -4,6 +4,10 @@
     {
       "source":      "/api/frameio/:path*",
       "destination": "/api/frameio/[...path]"
+    },
+    {
+      "source":      "/admin",
+      "destination": "/admin.html"
     }
   ]
 }

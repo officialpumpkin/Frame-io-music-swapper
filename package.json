@@ -8,7 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node test/proxy.test.mjs && node test/bug.test.mjs"
+    "test": "node test/proxy.test.mjs && node test/bug.test.mjs && node test/session.test.mjs"
   },
   "dependencies": {
     "@ffmpeg/core": "^0.12.10",

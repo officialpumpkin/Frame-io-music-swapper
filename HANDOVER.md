@@ -13,15 +13,17 @@ video loads → drop in candidate music tracks → play them against the picture
 MP4 with the chosen music mixed under the original audio.
 
 **Live:** https://frame-io-music-swapper.vercel.app (public — see _Security_ below)
+**Session builder:** https://frame-io-music-swapper.vercel.app/admin
 
 ## Run it
 
 ```bash
 npm install
 npm run dev      # UI only: /api/* 404s locally, so no Frame.io and no export
+                 # App at /, session builder at /admin.html
 npm run build
 npm run lint
-npm test        # proxy allowlist + bug-report endpoint
+npm test        # proxy allowlist, bug-report endpoint, session codec
 ```
 
 There is no local API. The serverless functions only exist when deployed, so anything
@@ -33,13 +35,17 @@ are Vercel-login-gated, production is not).
 
 | Path | What it does |
 |---|---|
-| `src/MusicLayerV3.jsx` | The whole app — API layer, playback, waveforms, UI, and the `CSS` template string |
+| `src/MusicLayerV3.jsx` | The spotting app — playback, waveforms, UI, and the `CSS` template string |
+| `src/frameio.js` | Frame.io V4 access layer, shared by the app and the admin page |
+| `src/session.js` | Encodes/decodes the session a generated link carries |
+| `src/AdminPage.jsx` · `src/adminStyles.js` | The session builder at `/admin` |
+| `index.html` · `admin.html` | The two page entries; see `vite.config.js` |
 | `src/exportMix.js` | MP4 export: fetch source, render music offline, mux with ffmpeg.wasm |
 | `api/frameio/[...path].js` | Proxy → `https://api.frame.io/v4/*`, injects `FRAMEIO_TOKEN` |
 | `api/expand.js` | Expands `f.io/xxx` shortlinks (HEAD + follow redirect) |
 | `api/bug.js` | Takes a report from the app's bug sheet and opens a GitHub issue |
 | `src/bugLog.js` | Rolling capture of console errors, uncaught throws and app breadcrumbs |
-| `vercel.json` | Rewrite that routes nested `/api/frameio/*` paths to the catch-all |
+| `vercel.json` | Rewrites: nested `/api/frameio/*` to the catch-all, and `/admin` to `admin.html` |
 | `vercel.bkk` | Andy's backup of the original config. Not used. Leave it alone. |
 | `public/brand/` | Brightworks logo artwork (black on transparent; inverted in CSS for the dark UI) |
 
@@ -244,6 +250,52 @@ tool round-trip — the round-trip alone is ~10s and will otherwise read as an o
 | Sync 13s into that clip | 53.28s | 53.24s |
 | Swap songs mid-playback | 58.693s | 58.656s (video never paused) |
 | Drag a 110s clip across a 60.04s cut | +9.22s | +9.22s |
+
+## Generated sessions, and the admin page
+
+An editor should not be walking a client through pasting a Frame.io link. `/admin` is a
+session builder: paste the Frame.io folder holding the cut and its candidate tracks, pick
+the cut, tick the music, copy the link. Whoever opens that link gets the cut loaded and
+the tracks already in the drawer, with no Load press.
+
+**Everything is in the link, and nothing is stored.** `src/session.js` encodes
+`{folder, video, tracks}` as base64url in the URL *fragment*. No datastore to provision,
+nothing to expire, nothing to prune, and it keeps the model the proxy already set: the
+link is the credential and names only assets that were already behind the allowlist. A
+fragment never reaches the server, so the IDs stay out of request logs. The cost is a long
+URL — the right way round for sessions made constantly and kept briefly.
+
+**The folder ID in the link is an optimisation, not decoration.** With it the app lists
+the folder once and picks the chosen IDs out of the result, so a five-track session costs
+one request instead of six.
+
+**Track order in the link is the order in the app, and `1`–`9` selects by position.** The
+admin page appends on tick rather than sorting into folder order, so what the editor ticks
+first is what `1` plays. Re-sorting anywhere in that chain would silently remap every
+shortcut.
+
+**Frame.io tracks are fetched to a blob and played from an object URL.** Signed links
+expire, and a session left open over a lunch break would otherwise lose its music halfway
+through. It also costs nothing: `analyseAudio` already accepts anything with
+`.arrayBuffer()`, so the waveform, playback and export all read the same local copy.
+
+**Local drag-and-drop still works and must keep working.** A generated session is a
+starting point, not a lock — whoever opens the link can drop their own music in beside
+what the editor chose. Both paths build the same track objects.
+
+`decodeSession` returns `null` for anything unreadable rather than throwing. A mail client
+wrapping a long URL is the expected failure, not a rare one, and it should leave the
+ordinary paste box on screen rather than a blank page. `npm test` covers the round trip,
+the three shapes that get pasted, junk IDs, and truncation.
+
+**The folder listing asks for one page of 40** (`FOLDER_PAGE_SIZE`). A folder that fills
+it says so on the admin page — a builder that quietly listed half a folder would send
+links missing tracks the editor thought they had chosen.
+
+The admin page is not access-controlled, and deliberately: it can only build links to
+assets in Brightworks' own Frame.io account, which the allowlist already governs, so
+reaching it grants nothing the paste box on the main page did not already grant. If that
+changes — if it ever writes anything — it needs a gate.
 
 ## Levels
 
@@ -455,6 +507,24 @@ whole-track export has been rendered and inspected.
 **8. Portrait on a real phone.** See the note above — the waveform dock and the sheet's
 Export button must be reachable. The bug sheet is a bottom sheet at this width for the
 same reason and wants the same check: the Send button must clear the keyboard.
+
+**10. The admin page and a generated link, end to end.** Nothing here has been run against
+real Frame.io. The unknowns worth watching, in order of how likely they are to bite:
+
+- **Does Frame.io serve audio the same way it serves video?** `mediaURL` reads
+  `media_links.original.inline_url`, which is right for video. If audio assets do not
+  expose it, tracks arrive named "(unavailable)" and the fix is in `videoURL`.
+- **Does fetching an audio file cross-origin work?** Export already fetches the video this
+  way, so it should — but if the tracks fail while the cut loads fine, that is the cause,
+  and the bug sheet's captured log will name it.
+- **Does `parent_id` come back on a file?** It is what makes pasting a link to the *cut*
+  find its folder. Without it that path degrades to the single file and no music, which is
+  handled but not what the editor expected.
+- **Are audio files matched at all?** `isAudio` tests `media_type` and falls back to the
+  extension, so an unusual container could be missed.
+
+Check too that the numbers beside the ticked tracks match what `1`–`9` play in the app,
+and that a client can still drop their own music in on top of a generated session.
 
 **9. The bug button itself, end to end.** Untested against a deployment — it is lint-clean,
 builds, and its endpoint is unit-tested against a stubbed GitHub, but no real issue has

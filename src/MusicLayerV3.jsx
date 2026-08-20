@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
 import { exportWithMusic, exportFileName, downloadBlob } from "./exportMix.js";
 import { note, formatLog } from "./bugLog.js";
+import { FIO, resolveURL, videoURL, mediaURL } from "./frameio.js";
+import { sessionFromLocation } from "./session.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -14,123 +16,11 @@ const TRACK_PALETTE = [
 // The selector that used to drive this lived in the marker export panel.
 const DISPLAY_FPS = 25;
 
-// ─── Frame.io API Layer ───────────────────────────────────────────────────────
-
-const API_BASE = "/api/frameio";
-
-async function apiRequest(token, method, path, body) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.message || `${res.status} ${res.statusText}`);
-  }
-  return res.json();
-}
-
-// V4 wraps every successful payload in a `data` envelope; V2 returned the
-// object directly. Unwrap once here so callers see the same shape as before.
-const unwrap = (r) => (r && typeof r === "object" && "data" in r ? r.data : r);
-
-// media_links variants must be named individually — a bare `include=media_links`
-// returns nothing. `original` is the only one a <video> element can play
-// natively; `efficient` and `high_quality` are both HLS manifests.
-const MEDIA_INCLUDE =
-  "include=media_links.original,media_links.efficient,media_links.thumbnail";
-
-// These are the only calls the proxy will forward — see api/frameio/[...path].js.
-// Adding one here without widening the allowlist there will 404.
-const FIO = {
-  accounts:    (t)                              => apiRequest(t, "GET",  "/accounts").then(unwrap),
-  // V4: assets → files, account_id required in every path
-  asset:       (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/files/${id}?${MEDIA_INCLUDE}`).then(unwrap),
-  children:    (t, acct, id)                    => apiRequest(t, "GET",  `/accounts/${acct}/files/${id}/children?type=file&page=1&page_size=40&${MEDIA_INCLUDE}`).then(unwrap),
-};
-
-// Parse any Frame.io URL and return { type, id }
-function parseFrameioURL(url) {
-  const u = url.trim();
-
-  const reviewMatch  = u.match(/\/(?:reviews|r)\/([a-f0-9-]{36})/i);
-  if (reviewMatch) return { type: "review_link", id: reviewMatch[1] };
-  const presentMatch = u.match(/\/presentations\/([a-f0-9-]{36})/i);
-  if (presentMatch) return { type: "review_link", id: presentMatch[1] };
-
-  // Extract ALL UUIDs from the URL
-  const uuids = [...u.matchAll(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi)];
-
-  if (uuids.length > 0) {
-    // In V4 URLs, the actual asset/folder is always the LAST ID in the chain
-    const targetId = uuids[uuids.length - 1][0];
-    return { type: "asset", id: targetId };
-  }
-
-  return null;
-}
-
-// Resolve any URL → { type: 'video'|'folder', asset?, assets?, folderName? }
-async function resolveURL(token, accountId, url) {
-  let finalUrl = url.trim();
-
-  // Check if it's a shortlink. If so, let our backend expand it first.
-  if (/f\.io\//i.test(finalUrl)) {
-    if (!finalUrl.startsWith('http')) finalUrl = `https://${finalUrl}`;
-    const expandRes = await fetch(`/api/expand?url=${encodeURIComponent(finalUrl)}`);
-    if (!expandRes.ok) throw new Error("Could not expand shortlink.");
-    const expandData = await expandRes.json();
-    finalUrl = expandData.expandedUrl || finalUrl;
-  }
-
-  const parsed = parseFrameioURL(finalUrl);
-  if (!parsed) throw new Error("Couldn't find a Frame.io asset ID in that URL.");
-
-  if (parsed.type === "review_link") {
-    // V4 replaced review links with shares, so the ID in a /reviews/ or
-    // /presentations/ URL names no file the API can fetch. This never resolved;
-    // say what to paste instead of surfacing an upstream 404.
-    throw new Error("That's a review or presentation link. Open it in Frame.io, click the video, and paste the link from that page.");
-  }
-
-  const asset = await FIO.asset(token, accountId, parsed.id);
-  if (asset.type === "file" || asset.item_type === "file") return { type: "video", asset };
-
-  // Folder / project — V4 may wrap children in { data: [...] }
-  const childrenRes = await FIO.children(token, accountId, parsed.id);
-  const children    = Array.isArray(childrenRes) ? childrenRes : (childrenRes.data || []);
-  const videos = children.filter(a =>
-    (a.type === "file" || a.item_type === "file") && /video/i.test(a.media_type || "")
-  );
-  if (videos.length === 0) throw new Error("No video files found in this folder.");
-  if (videos.length === 1) return { type: "video", asset: videos[0] };
-  return { type: "folder", assets: videos, folderName: asset.name };
-}
-
-// Pick best available playback URL from an asset
-function videoURL(asset) {
-  // V4 uses media_links; fall back to V2 transcodes for compatibility.
-  // Note V4 exposes download_url / inline_url, not url — and `efficient` and
-  // `high_quality` are HLS manifests that only Safari plays without hls.js, so
-  // the original MP4 (served inline) is preferred for playback everywhere.
-  const ml = asset.media_links || {};
-  const t  = asset.transcodes  || {};
-  return (
-    ml.original?.inline_url     ||
-    ml.original?.download_url   ||
-    ml.efficient?.url           ||
-    ml.high_quality?.url        ||
-    // Last resort: HLS. Plays in Safari, needs hls.js elsewhere.
-    ml.efficient?.download_url  ||
-    ml.high_quality?.download_url ||
-    t.h264_1080 || t.h264_720 || t.h264_540 || t.h264_360 ||
-    asset.original || null
-  );
-}
+// The session named by the address bar, read once at load. A link cannot change
+// without a reload, so there is nothing to watch. Module scope also gives the
+// one-shot guard below somewhere to live that StrictMode cannot reset.
+const LINKED_SESSION = typeof window !== "undefined" ? sessionFromLocation() : null;
+let sessionConsumed = false;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -973,6 +863,126 @@ export default function MusicLayerV3() {
     setCurrentAsset(a);
     setFolderAssets(null);
   }, []);
+
+  // ── Tracks that came from Frame.io rather than off someone's desk
+  //
+  // Each one is fetched to a blob and played from an object URL, not streamed
+  // from its Frame.io link. Two reasons: the signed link expires, and a session
+  // left open across a lunch break would otherwise lose its music halfway
+  // through; and analyseAudio already takes anything with .arrayBuffer(), so a
+  // blob costs nothing extra and the waveform, playback and export then all
+  // read the same local copy.
+  const addRemoteTracks = useCallback((assets) => {
+    if (!assets.length) return;
+    const entries = assets.map((a, i) => ({
+      id: uid(),
+      name: (a.name || "Track").replace(/\.[^.]+$/, ""),
+      url: "",                     // filled in once the audio is in hand
+      color: colorFor((a.name || "") + i),
+      wave: Array.from({ length: 300 }, () => 0.15),
+      analysing: true,
+      size: "—",
+      srcIn: null, srcOut: null,
+      gain: 1,
+    }));
+
+    setTracks(prev => [...prev, ...entries]);
+    // Outside the updater: React may run an updater more than once, so it has
+    // to stay pure. The first arriving track becomes the selected one, matching
+    // what dropping files in does.
+    if (!activeTrackIdRef.current) setActiveTrackId(entries[0].id);
+
+    // In parallel: a four-track session should not take four times as long.
+    assets.forEach(async (a, i) => {
+      const entryId = entries[i].id;
+      const link    = mediaURL(a);
+      if (!link) {
+        note(`session: no media link for ${a.name}`);
+        setTracks(prev => prev.map(t => t.id === entryId
+          ? { ...t, analysing: false, name: `${t.name} (unavailable)` } : t));
+        return;
+      }
+      try {
+        const blob = await fetch(link).then(r => {
+          if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+          return r.blob();
+        });
+        const objectURL = URL.createObjectURL(blob);
+        const { wave, duration } = await analyseAudio(blob);
+        setTracks(prev => prev.map(t => t.id === entryId
+          ? {
+              ...t, url: objectURL, wave, analysing: false, audioDuration: duration,
+              size: blob.size > 1048576
+                ? `${(blob.size / 1048576).toFixed(1)} MB`
+                : `${(blob.size / 1024).toFixed(0)} KB`,
+            }
+          : t));
+      } catch (e) {
+        note(`session: track failed — ${a.name} — ${e.message}`);
+        setTracks(prev => prev.map(t => t.id === entryId
+          ? { ...t, analysing: false, name: `${t.name} (failed to load)` } : t));
+      }
+    });
+  }, []);
+
+  // ── Load the session a generated link names
+  //
+  // No Load press: the editor already chose all of this, and asking the person
+  // they sent it to to press a button to see what they were sent is a step with
+  // nothing behind it.
+  const loadSession = useCallback(async (session, acct) => {
+    setResolving(true);
+    setResolveErr("");
+    try {
+      // When the link names the folder, one listing answers the whole session —
+      // the cut and every track — instead of a request per asset.
+      let byId = new Map();
+      if (session.folderId) {
+        const res  = await FIO.children(token, acct, session.folderId);
+        const list = Array.isArray(res) ? res : (res.data || []);
+        byId = new Map(list.map(a => [a.id, a]));
+      }
+      const fetchOne = async (id) => byId.get(id) || FIO.asset(token, acct, id);
+
+      const videoAsset = await fetchOne(session.videoId);
+      const url = videoURL(videoAsset);
+      if (!url) {
+        throw new Error("That cut has no playable media yet — it may still be transcoding in Frame.io.");
+      }
+      setCurrentAsset({ id: videoAsset.id, name: videoAsset.name, url });
+      note(`session: cut loaded — ${videoAsset.name}`);
+
+      const trackAssets = (await Promise.all(
+        session.trackIds.map(id => Promise.resolve(fetchOne(id)).catch(() => null))
+      )).filter(Boolean);
+      if (trackAssets.length < session.trackIds.length) {
+        note(`session: ${session.trackIds.length - trackAssets.length} track(s) could not be read`);
+      }
+      addRemoteTracks(trackAssets);
+    } catch (e) {
+      // The recipient cannot fix a bad link, so say what to do about it.
+      setResolveErr(`${e.message} — ask for a fresh link, or paste one below.`);
+      note(`session: failed — ${e.message}`);
+    }
+    setResolving(false);
+  }, [token, addRemoteTracks]);
+
+  // Fires as soon as the account ID is known. Guarded at module scope rather
+  // than in state because StrictMode invokes effects twice in development, and
+  // loading the session twice would double every track.
+  useEffect(() => {
+    if (!accountId || !LINKED_SESSION || sessionConsumed) return;
+    sessionConsumed = true;
+    // Kicked off as a task rather than called straight from the effect body:
+    // loadSession sets state on its first line, and doing that synchronously
+    // inside an effect cascades a render before the first paint. It also means
+    // the empty state gets to say "Preparing…" before the fetching starts.
+    //
+    // Deliberately not cancelled on cleanup. The module-scope guard above
+    // already makes this one-shot, and clearing the timer would mean
+    // StrictMode's throwaway first mount swallowed the only attempt.
+    setTimeout(() => loadSession(LINKED_SESSION, accountId), 0);
+  }, [accountId, loadSession]);
 
   // ── Video events
   useEffect(() => {
@@ -2094,7 +2104,14 @@ export default function MusicLayerV3() {
                     <rect x="2" y="4" width="20" height="16" rx="3" />
                     <path d="M10 9l6 3-6 3z" fill="#5A5A72" stroke="none" />
                   </svg>
-                  <span className="bms-empty-txt">Paste a Frame.io link to begin</span>
+                  {/* A link that loads itself must say so. Otherwise the first
+                      seconds of a generated session look like an app telling
+                      you to do the thing it is already doing. */}
+                  <span className="bms-empty-txt">
+                    {LINKED_SESSION && resolving ? "Loading your session…"
+                      : LINKED_SESSION && !resolveErr ? "Preparing…"
+                      : "Paste a Frame.io link to begin"}
+                  </span>
                 </div>
               )}
 
